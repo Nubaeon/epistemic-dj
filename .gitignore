@@ -1,0 +1,6 @@
+node_modules/
+.empirica/sessions/
+.empirica_reflex_logs/
+dist/
+*.log
+.DS_Store

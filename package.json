@@ -1,0 +1,41 @@
+{
+  "name": "epistemic-dj",
+  "version": "0.1.0",
+  "description": "MCP server that maps epistemic state to generative music via Strudel",
+  "type": "module",
+  "main": "src/mcp/server.js",
+  "bin": {
+    "epistemic-dj": "./src/mcp/server.js"
+  },
+  "scripts": {
+    "start": "node src/mcp/server.js",
+    "dev": "node --watch src/mcp/server.js",
+    "test": "node --test tests/",
+    "analyze": "node src/analyzer/cli.js",
+    "generate": "node src/generator/cli.js",
+    "web": "npx serve src/web"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "epistemic",
+    "music",
+    "strudel",
+    "live-coding",
+    "generative"
+  ],
+  "author": "Nubaeon",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "meyda": "^5.6.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "web-audio-api": "^0.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Epistemic DJ</title>
+  <script src="https://unpkg.com/@strudel/repl@1.0.2"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #7c3aed;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 20px;
+    }
+    .controls {
+      background: #1a1a2e;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .vector-group {
+      margin-bottom: 15px;
+    }
+    .vector-group label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 5px;
+      font-size: 12px;
+      color: #a0a0a0;
+    }
+    .vector-group input[type="range"] {
+      width: 100%;
+      accent-color: #7c3aed;
+    }
+    .mood-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    button {
+      background: #7c3aed;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 14px;
+      transition: background 0.2s;
+    }
+    button:hover { background: #6d28d9; }
+    button.secondary {
+      background: #374151;
+    }
+    button.secondary:hover { background: #4b5563; }
+    .strudel-container {
+      background: #1a1a2e;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    strudel-editor {
+      --background: #1a1a2e;
+      --foreground: #e0e0e0;
+      height: 500px;
+    }
+    .info {
+      margin-top: 20px;
+      padding: 15px;
+      background: #1f1f3a;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+    .info h3 {
+      color: #7c3aed;
+      margin-bottom: 10px;
+    }
+    #status {
+      text-align: center;
+      padding: 10px;
+      color: #6b7280;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎧 Epistemic DJ</h1>
+
+  <div class="container">
+    <div class="controls">
+      <h3 style="margin-bottom: 15px; color: #7c3aed;">Mood Presets</h3>
+      <div class="mood-buttons">
+        <button onclick="setMood('focus')">🎯 Focus</button>
+        <button onclick="setMood('energize')">⚡ Energize</button>
+        <button onclick="setMood('reflect')">🌙 Reflect</button>
+        <button onclick="setMood('debug')">🐛 Debug</button>
+        <button onclick="setMood('celebrate')">🎉 Celebrate</button>
+        <button class="secondary" onclick="randomize()">🎲 Random</button>
+      </div>
+
+      <h3 style="margin-bottom: 15px; color: #7c3aed;">Epistemic Vectors</h3>
+
+      <div class="vector-group">
+        <label>Know <span id="know-val">0.50</span></label>
+        <input type="range" id="know" min="0" max="1" step="0.05" value="0.5" oninput="updateVector('know')">
+      </div>
+
+      <div class="vector-group">
+        <label>Uncertainty <span id="uncertainty-val">0.50</span></label>
+        <input type="range" id="uncertainty" min="0" max="1" step="0.05" value="0.5" oninput="updateVector('uncertainty')">
+      </div>
+
+      <div class="vector-group">
+        <label>Engagement <span id="engagement-val">0.50</span></label>
+        <input type="range" id="engagement" min="0" max="1" step="0.05" value="0.5" oninput="updateVector('engagement')">
+      </div>
+
+      <div class="vector-group">
+        <label>Clarity <span id="clarity-val">0.50</span></label>
+        <input type="range" id="clarity" min="0" max="1" step="0.05" value="0.5" oninput="updateVector('clarity')">
+      </div>
+
+      <div class="vector-group">
+        <label>Coherence <span id="coherence-val">0.50</span></label>
+        <input type="range" id="coherence" min="0" max="1" step="0.05" value="0.5" oninput="updateVector('coherence')">
+      </div>
+
+      <div class="vector-group">
+        <label>Signal <span id="signal-val">0.50</span></label>
+        <input type="range" id="signal" min="0" max="1" step="0.05" value="0.5" oninput="updateVector('signal')">
+      </div>
+
+      <div class="vector-group">
+        <label>Completion <span id="completion-val">0.50</span></label>
+        <input type="range" id="completion" min="0" max="1" step="0.05" value="0.5" oninput="updateVector('completion')">
+      </div>
+
+      <button style="width: 100%; margin-top: 15px;" onclick="generateFromSliders()">
+        🎵 Generate Pattern
+      </button>
+
+      <div class="info">
+        <h3>How it works</h3>
+        <p>Adjust the epistemic vectors to change the music:</p>
+        <ul style="margin-left: 15px; margin-top: 10px; line-height: 1.6;">
+          <li><b>Know</b> → Scale consonance</li>
+          <li><b>Uncertainty</b> → Pattern chaos</li>
+          <li><b>Engagement</b> → Tempo & energy</li>
+          <li><b>Clarity</b> → Brightness</li>
+          <li><b>Coherence</b> → Rhythm stability</li>
+          <li><b>Signal</b> → Note density</li>
+          <li><b>Completion</b> → Build-up</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="strudel-container">
+      <strudel-editor id="editor">
+// Welcome to Epistemic DJ!
+// Click a mood preset or adjust the sliders to generate music
+
+s("bd sd").slow(2)
+      </strudel-editor>
+    </div>
+  </div>
+
+  <div id="status">Ready - Click a mood or generate a pattern</div>
+
+  <script type="module">
+    import { generatePattern, generateMoodPattern } from './generator.js';
+
+    const MOODS = {
+      focus: { know: 0.6, uncertainty: 0.3, engagement: 0.5, clarity: 0.7, coherence: 0.8, signal: 0.4, density: 0.3, state: 0.5, change: 0.2, completion: 0.3, impact: 0.5, context: 0.5, do: 0.6 },
+      energize: { know: 0.7, uncertainty: 0.2, engagement: 0.9, clarity: 0.8, coherence: 0.7, signal: 0.7, density: 0.6, state: 0.6, change: 0.4, completion: 0.5, impact: 0.8, context: 0.6, do: 0.8 },
+      reflect: { know: 0.4, uncertainty: 0.5, engagement: 0.3, clarity: 0.4, coherence: 0.6, signal: 0.3, density: 0.2, state: 0.4, change: 0.3, completion: 0.2, impact: 0.4, context: 0.7, do: 0.3 },
+      debug: { know: 0.5, uncertainty: 0.6, engagement: 0.7, clarity: 0.5, coherence: 0.5, signal: 0.6, density: 0.5, state: 0.4, change: 0.5, completion: 0.3, impact: 0.6, context: 0.5, do: 0.6 },
+      celebrate: { know: 0.9, uncertainty: 0.1, engagement: 0.95, clarity: 0.9, coherence: 0.9, signal: 0.8, density: 0.7, state: 0.8, change: 0.3, completion: 0.95, impact: 0.9, context: 0.7, do: 0.9 },
+    };
+
+    window.setMood = function(mood) {
+      const vectors = MOODS[mood];
+      if (vectors) {
+        // Update sliders
+        for (const [key, val] of Object.entries(vectors)) {
+          const slider = document.getElementById(key);
+          const valSpan = document.getElementById(`${key}-val`);
+          if (slider) {
+            slider.value = val;
+            if (valSpan) valSpan.textContent = val.toFixed(2);
+          }
+        }
+        // Generate pattern
+        const pattern = generatePattern(vectors, { includeComments: false });
+        setEditorContent(pattern);
+        document.getElementById('status').textContent = `Generated ${mood} mood pattern`;
+      }
+    };
+
+    window.updateVector = function(name) {
+      const slider = document.getElementById(name);
+      const valSpan = document.getElementById(`${name}-val`);
+      if (slider && valSpan) {
+        valSpan.textContent = parseFloat(slider.value).toFixed(2);
+      }
+    };
+
+    window.generateFromSliders = function() {
+      const vectors = {};
+      ['know', 'uncertainty', 'engagement', 'clarity', 'coherence', 'signal', 'completion'].forEach(name => {
+        const slider = document.getElementById(name);
+        if (slider) vectors[name] = parseFloat(slider.value);
+      });
+      // Add defaults for missing vectors
+      vectors.density = vectors.signal;
+      vectors.state = 0.5;
+      vectors.change = 0.3;
+      vectors.impact = vectors.engagement;
+      vectors.context = 0.5;
+      vectors.do = vectors.know;
+
+      const pattern = generatePattern(vectors, { includeComments: false });
+      setEditorContent(pattern);
+      document.getElementById('status').textContent = 'Generated pattern from sliders';
+    };
+
+    window.randomize = function() {
+      ['know', 'uncertainty', 'engagement', 'clarity', 'coherence', 'signal', 'completion'].forEach(name => {
+        const slider = document.getElementById(name);
+        if (slider) {
+          const val = Math.random();
+          slider.value = val;
+          const valSpan = document.getElementById(`${name}-val`);
+          if (valSpan) valSpan.textContent = val.toFixed(2);
+        }
+      });
+      generateFromSliders();
+    };
+
+    function setEditorContent(code) {
+      const editor = document.getElementById('editor');
+      if (editor && editor.setCode) {
+        editor.setCode(code);
+      } else {
+        // Fallback: replace innerHTML
+        editor.innerHTML = `<!--\n${code}\n-->`;
+        location.reload(); // Reload to apply new code
+      }
+    }
+  </script>
+</body>
+</html>

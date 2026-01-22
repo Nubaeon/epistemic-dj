@@ -1,0 +1,68 @@
+{
+  "analysis_date": "2026-01-18",
+  "session_id": "997405cf-1903-42c7-9430-66e2ae2542a6",
+  "tracks_analyzed": [
+    {
+      "artist": "Space Manoeuvres",
+      "title": "Stage One (Pariah Remix)",
+      "youtube_id": "6nssiuNoK6s",
+      "features": {
+        "meanVolume": -15.8,
+        "maxVolume": 0,
+        "dynamicRange": 15.8,
+        "integratedLoudness": -13.4,
+        "duration": 627.46,
+        "estimatedBPM": "~130 (actual, detection failed)"
+      },
+      "vectors": {
+        "know": 0.9,
+        "uncertainty": 0.263,
+        "clarity": 0.737,
+        "coherence": 0.605,
+        "signal": 0.333,
+        "change": 0.527,
+        "impact": 0.665
+      },
+      "epistemic_interpretation": "Long-form progressive trance - high know (developed ideas), moderate dynamics, good coherence. The track builds slowly with clear structure."
+    },
+    {
+      "artist": "Sander Kleinenberg",
+      "title": "My Lexicon (Original Mix)",
+      "youtube_id": "PJbztOpbZG4",
+      "features": {
+        "meanVolume": -14.1,
+        "maxVolume": 0,
+        "dynamicRange": 14.1,
+        "integratedLoudness": -12.3,
+        "duration": 552.03,
+        "estimatedBPM": "~128 (actual, detection failed)"
+      },
+      "vectors": {
+        "know": 0.9,
+        "uncertainty": 0.235,
+        "clarity": 0.765,
+        "coherence": 0.647,
+        "signal": 0.346,
+        "change": 0.470,
+        "impact": 0.693
+      },
+      "epistemic_interpretation": "Classic progressive house - high clarity, good coherence, slightly louder/more impactful than Stage One. Lower uncertainty suggests more 'certain' musical direction."
+    }
+  ],
+  "findings": [
+    "BPM detection via silence detection unreliable for electronic music - needs proper onset/beat detection (aubio/librosa)",
+    "Loudness metrics (mean volume, integrated loudness, dynamic range) extract correctly",
+    "Duration-based 'know' mapping works well for long-form electronic tracks",
+    "Dynamic range maps well to 'change' vector",
+    "These late 90s/early 2000s progressive tracks share similar epistemic signatures: high know, moderate clarity/coherence, controlled dynamics"
+  ],
+  "tracks_catalogued": [
+    "Sander Kleinenberg - My Lexicon",
+    "Orbital - Nothing Left (Breeder Remix)",
+    "Christian Smith & John Selway - Move!",
+    "Jimpy & Sarah - Talkin' (Tarrantella vs Redanka Remix)",
+    "Space Manoeuvres - Stage One (Pariah Remix)",
+    "Sander Kleinenberg - Sacred (Dub)",
+    "Natious - Amber (Silk Mix)"
+  ]
+}

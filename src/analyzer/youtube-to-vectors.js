@@ -93,20 +93,39 @@ async function analyzeAudio(audioPath) {
     // Get spectral info using showspectrumpic (simplified)
     // For actual spectral centroid, we'd need proper DSP
 
-    // Estimate tempo using onset detection (simplified)
-    const onsetOutput = execSync(
-      `ffmpeg -i "${audioPath}" -af "silencedetect=n=-30dB:d=0.1" -f null - 2>&1 | grep -c "silence_end" || echo "0"`,
-      { encoding: 'utf-8', timeout: 60000 }
-    );
-
+    // Get duration
     const duration = parseFloat(execSync(
       `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`,
       { encoding: 'utf-8' }
     ).trim());
-
-    const onsetCount = parseInt(onsetOutput.trim()) || 10;
-    features.estimatedBPM = Math.round((onsetCount / duration) * 60 * 2); // Rough estimate
     features.duration = duration;
+
+    // Use aubio for proper BPM detection
+    try {
+      const aubioOutput = execSync(
+        `aubiotrack -i "${audioPath}" 2>/dev/null | wc -l`,
+        { encoding: 'utf-8', timeout: 120000 }
+      );
+      const beatCount = parseInt(aubioOutput.trim()) || 0;
+
+      if (beatCount > 10 && duration > 30) {
+        // Calculate BPM from beat count and duration
+        features.estimatedBPM = Math.round((beatCount / duration) * 60);
+        features.beatCount = beatCount;
+      } else {
+        // Fallback: try aubioonset for onset-based estimation
+        const onsetOutput = execSync(
+          `aubioonset -i "${audioPath}" 2>/dev/null | wc -l`,
+          { encoding: 'utf-8', timeout: 120000 }
+        );
+        const onsetCount = parseInt(onsetOutput.trim()) || 0;
+        features.estimatedBPM = onsetCount > 0 ? Math.round((onsetCount / duration) * 60 / 4) : 120;
+        features.onsetCount = onsetCount;
+      }
+    } catch (aubioError) {
+      console.error('Warning: aubio analysis failed, using fallback');
+      features.estimatedBPM = 120; // Default fallback
+    }
 
   } catch (error) {
     console.error('Warning: Some analysis failed:', error.message);

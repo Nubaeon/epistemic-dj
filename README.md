@@ -1,16 +1,38 @@
 # 🎧 Epistemic DJ
 
-**MCP server that maps epistemic state to generative music via Strudel.cc**
+**Music taste profiling & AI-driven generation system.**
 
-Transform your cognitive state into sound. High uncertainty? Dissonant, chaotic patterns. Deep focus? Clean, driving beats. Celebrating a win? Full-on euphoric build-ups.
+Analyze, curate, and create music grounded in learned epistemic profiles. epistemic-dj builds taste models from music analysis and listener preferences, then uses LLMs to curate, mix, and eventually compose new music matching those profiles.
+
+**Two core workflows:**
+
+1. **Epistemic → Sound**: Transform your cognitive state into music. High uncertainty? Dissonant, chaotic patterns. Deep focus? Clean, driving beats. Celebrating a win? Full-on euphoric build-ups.
+
+2. **Taste Profiling & Curation**: Build epistemic profiles of musical taste (genre affinity, mood preferences, discovery vectors), then use LLMs to:
+   - Analyze music sources (metadata, audio features, contextual signals)
+   - Curate playlists matching taste profiles
+   - Mix and match tracks for dynamic compositions
+   - Generate new music grounded in learned taste models
 
 ## Features
 
+### Epistemic State → Sound
 - **MCP Tools** for Claude Code integration
 - **Pattern Generator** - 13 epistemic vectors → Strudel live coding patterns
 - **Mood Presets** - focus, energize, reflect, debug, celebrate
 - **Web UI** - Interactive sliders + embedded Strudel REPL
-- **Audio Analyzer** (coming soon) - Extract epistemic vectors from music
+
+### Music Taste Profiling & Curation
+- **Music Analyzer** - Extract features, metadata, contextual signals from audio
+- **Taste Profile Builder** - Learn genre affinity, mood preferences, discovery vectors from listener input
+- **LLM Curator** - Use Claude to match music sources against taste profiles
+- **Dynamic Mixing** - Create playlists, mashups, and smooth transitions from profiles
+- **Audio Analyzer** - Convert existing music into epistemic vectors
+
+### Generative Composition (upcoming)
+- **Strudel Integration** - Algorithmic music composition via live-coding
+- **Profile-Driven Generation** - Generate original music grounded in taste models
+- **Cross-Fade Patterns** - Smooth transitions between epistemic states
 
 ## Quick Start
 
@@ -103,13 +125,25 @@ Generate a pattern for my current epistemic state:
 
 ## Roadmap
 
+### Phase 1: Epistemic State → Sound (current)
 - [x] Pattern generator (vectors → Strudel)
 - [x] MCP server with tools
 - [x] Web UI with sliders
-- [ ] Audio analyzer (music → vectors)
 - [ ] WebSocket bridge for real-time updates
 - [ ] Empirica integration for automatic state tracking
+
+### Phase 2: Taste Profiling & Curation (in progress)
+- [ ] Music analyzer (audio → vectors)
+- [ ] Taste profile builder (listener preferences → models)
+- [ ] LLM curator (match profiles to sources)
+- [ ] Playlist & mashup generation
+- [ ] Music source integration (Spotify, SoundCloud, local files)
+
+### Phase 3: Generative Composition (planned)
+- [ ] Profile-driven music generation (compose new tracks from taste models)
 - [ ] Feedback loop (music influences cognition?)
+- [ ] Cross-practice composition (mix epistemic state with taste profiles)
+- [ ] Empirica artifact integration (log music as a form of thought)
 
 ## License
 

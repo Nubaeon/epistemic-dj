@@ -1,7 +1,7 @@
 {
   "name": "epistemic-dj",
   "version": "0.1.0",
-  "description": "MCP server that maps epistemic state to generative music via Strudel",
+  "description": "Music taste profiling & generation system. LLM-powered analysis, curation, and algorithmic composition grounded in learned epistemic profiles. MCP server bridging Claude AI to music generation via Strudel.",
   "type": "module",
   "main": "src/mcp/server.js",
   "bin": {
@@ -20,9 +20,14 @@
     "claude",
     "epistemic",
     "music",
+    "taste-profiling",
+    "music-curation",
     "strudel",
     "live-coding",
-    "generative"
+    "generative",
+    "music-generation",
+    "ai-composition",
+    "llm-music"
   ],
   "author": "Nubaeon",
   "license": "MIT",

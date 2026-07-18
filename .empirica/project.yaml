@@ -1,20 +1,31 @@
 version: '1.0'
 name: epistemic-dj
 ai_id: epistemic-dj
-description: |
-  Music taste profiling & generation system.
+description: 'Music taste profiling & generation system.
+
 
   epistemic-dj analyzes music sources and listener preferences to build
+
   epistemic profiles of musical taste. LLM-powered curation, mixing, and
+
   matching against those profiles. Eventually: algorithmic music composition
+
   and digital creation grounded in learned taste models.
 
+
   Core capabilities:
+
   - Music source analysis (metadata, audio features, contextual signals)
+
   - Listener epistemic profiling (taste, mood, genre affinity, discovery vectors)
+
   - LLM-driven curation (matching listener profiles to sources)
+
   - Mix/match composition (create playlists and mashups from profiles)
+
   - Future: generative music creation (compose new music matching taste profiles)
+
+  '
 beads:
   default_enabled: false
 subjects: {}
@@ -32,5 +43,32 @@ remotes:
     push: true
     fetch: false
     purposes:
-      - empirica_metadata
-      - git_notes
+    - empirica_metadata
+    - git_notes
+calibration_weights:
+  noetic:
+    know: 1.0
+    context: 0.8
+    signal: 0.9
+    uncertainty: 1.0
+    do: 0.3
+    change: 0.2
+    state: 0.3
+    completion: 0.5
+    impact: 0.3
+    clarity: 0.7
+    coherence: 0.6
+    density: 0.4
+  praxic:
+    know: 1.0
+    completion: 1.0
+    context: 1.0
+    impact: 0.9
+    uncertainty: 0.8
+    change: 0.9
+    do: 0.7
+    clarity: 0.7
+    coherence: 0.7
+    signal: 0.4
+    density: 0.4
+    state: 0.7

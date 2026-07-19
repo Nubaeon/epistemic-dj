@@ -1,10 +1,14 @@
+from typing import cast
+
 import pytest
+from bandcamp_async_api import BandcampAPIClient
 
 from epistemic_dj.bandcamp.client import (
     IDENTITY_TOKEN_ENV_VAR,
     MissingIdentityTokenError,
     get_client,
     get_identity_token,
+    get_track_with_tags,
     managed_client,
 )
 
@@ -52,3 +56,54 @@ async def test_managed_client_session_is_properly_closed_no_warnings(recwarn):
     # BandcampAPIClient.session_close() skips its own close path entirely --
     # our `async with aiohttp.ClientSession()` closes it correctly instead.
     assert not any("coroutine" in str(w.message) for w in recwarn.list)
+
+
+async def test_get_track_with_tags_extracts_genre_tags_and_filters_location():
+    class FakeParsedTrack:
+        id = 1
+
+    class FakeParsers:
+        def parse_track(self, data):
+            return FakeParsedTrack()
+
+    class FakeClient:
+        BASE_URL = "https://bandcamp.com/api"
+        _parsers = FakeParsers()
+
+        async def _get(self, url, params):
+            assert params == {"band_id": 1, "tralbum_id": 2, "tralbum_type": "t"}
+            return {
+                "tags": [
+                    {"name": "Experimental", "isloc": False},
+                    {"name": "Transcendental Dance Pop", "isloc": False},
+                    {"name": "Athens", "isloc": True},
+                ]
+            }
+
+    track, tags = await get_track_with_tags(
+        cast(BandcampAPIClient, FakeClient()), artist_id=1, track_id=2
+    )
+
+    assert track.id == 1
+    assert tags == ["Experimental", "Transcendental Dance Pop"]
+
+
+async def test_get_track_with_tags_handles_no_tags():
+    class FakeParsedTrack:
+        id = 1
+
+    class FakeParsers:
+        def parse_track(self, data):
+            return FakeParsedTrack()
+
+    class FakeClient:
+        BASE_URL = "https://bandcamp.com/api"
+        _parsers = FakeParsers()
+
+        async def _get(self, url, params):
+            return {}
+
+    _, tags = await get_track_with_tags(
+        cast(BandcampAPIClient, FakeClient()), artist_id=1, track_id=2
+    )
+    assert tags == []

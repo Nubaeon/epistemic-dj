@@ -17,9 +17,11 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import aiohttp
 from bandcamp_async_api import BandcampAPIClient
+from bandcamp_async_api.models import BCTrack
 
 IDENTITY_TOKEN_ENV_VAR = "BANDCAMP_IDENTITY_TOKEN"
 
@@ -75,3 +77,28 @@ def get_client(identity_token: str | None = None):
     operations, use managed_client() directly instead.
     """
     return managed_client(identity_token or get_identity_token())
+
+
+async def get_track_with_tags(
+    client: BandcampAPIClient, artist_id: int | str, track_id: int | str
+) -> tuple[BCTrack, list[str]]:
+    """Like client.get_track(), but also returns the track's real artist/
+    platform-assigned genre tags -- confirmed live that bandcamp_async_api's
+    parse_track() silently discards them (hardcodes album=None and never
+    extracts artist.tags/genre, even though the raw tralbum_details response
+    carries a real `tags` array -- e.g. a track literally titled "Power
+    Breaks" was actually tagged "Experimental"/"Transcendental Dance Pop",
+    nothing like what the title suggests). Location tags (isloc=True, e.g.
+    "Athens") are filtered out -- genre/style only, not geography.
+
+    Replicates get_track()'s exact internal call (same endpoint/params) so
+    this costs one network request, not two.
+    """
+    url = f"{client.BASE_URL}/mobile/24/tralbum_details"
+    params = {"band_id": artist_id, "tralbum_id": track_id, "tralbum_type": "t"}
+    data: dict[str, Any] = await client._get(url=url, params=params)
+    track = client._parsers.parse_track(data)
+    tags = [
+        tag["name"] for tag in data.get("tags", []) if not tag.get("isloc", False)
+    ]
+    return track, tags

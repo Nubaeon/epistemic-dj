@@ -1,6 +1,6 @@
-from bandcamp_async_api.models import CollectionItem
+from bandcamp_async_api.models import BCArtist, BCTrack, CollectionItem
 
-from epistemic_dj.bandcamp.adapter import collection_item_to_track
+from epistemic_dj.bandcamp.adapter import collection_item_to_track, track_with_tags_to_track
 
 
 def test_collection_item_to_track_maps_core_fields():
@@ -24,3 +24,21 @@ def test_collection_item_to_track_maps_core_fields():
     assert track.artist == "Some Artist"
     assert track.tags == []
     assert track.vectors is None
+
+
+def test_track_with_tags_to_track_maps_real_genre_tags():
+    artist = BCArtist(id=861206575, name="tunabunny")
+    bc_track = BCTrack(
+        id=2615539690,
+        title="Power Breaks",
+        artist=artist,
+        url="https://tunabunny.bandcamp.com/track/power-breaks",
+    )
+
+    track = track_with_tags_to_track(bc_track, ["Experimental", "Transcendental Dance Pop"])
+
+    assert track.id == "2615539690"
+    assert track.source == "bandcamp"
+    assert track.title == "Power Breaks"
+    assert track.artist == "tunabunny"
+    assert track.tags == ["Experimental", "Transcendental Dance Pop"]

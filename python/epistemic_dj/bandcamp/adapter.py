@@ -16,7 +16,7 @@ required for Sprint 1's login+collection-fetch acceptance bar.
 
 from __future__ import annotations
 
-from bandcamp_async_api.models import CollectionItem
+from bandcamp_async_api.models import BCTrack, CollectionItem
 
 from epistemic_dj.models import Track
 
@@ -29,4 +29,20 @@ def collection_item_to_track(item: CollectionItem) -> Track:
         title=item.item_title,
         artist=item.band_name,
         tags=[],
+    )
+
+
+def track_with_tags_to_track(track: BCTrack, tags: list[str]) -> Track:
+    """Maps a get_track_with_tags() result to the source-agnostic Track
+    model, WITH real artist/platform-assigned genre tags -- unlike
+    collection_item_to_track(), which stays empty by design (lightweight
+    collection listing has no tag data at all, not even via a workaround).
+    """
+    return Track(
+        id=str(track.id),
+        source="bandcamp",
+        source_url=track.url or "",
+        title=track.title,
+        artist=track.artist.name,
+        tags=tags,
     )

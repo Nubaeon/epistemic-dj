@@ -53,6 +53,7 @@ async def test_all_expected_tools_are_registered():
         "taste_decay_pattern",
         "taste_export_profile",
         "taste_save_mixtape",
+        "audio_analyze_track",
     }
 
 
@@ -69,7 +70,7 @@ async def test_bandcamp_search_via_call_tool(monkeypatch):
 
     structured = await _call_tool("bandcamp_search", {"query": "radiohead"})
     assert structured["result"] == [
-        {"type": "album", "id": 1, "name": "Some Album", "url": "https://x/y"}
+        {"type": "album", "id": 1, "name": "Some Album", "url": "https://x/y", "artist_id": 0}
     ]
 
 

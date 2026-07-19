@@ -72,4 +72,63 @@ async def test_bandcamp_search_works_without_credentials(monkeypatch):
 
     results = await server.bandcamp_search("radiohead")
 
-    assert results == [{"type": "album", "id": 1, "name": "Some Album", "url": "https://x/y"}]
+    assert results == [
+        {"type": "album", "id": 1, "name": "Some Album", "url": "https://x/y", "artist_id": 0}
+    ]
+
+
+async def test_audio_analyze_track_fetches_streaming_url_and_maps_vectors(monkeypatch):
+    class FakeTrack:
+        streaming_url = {"mp3-128": "https://example.com/stream.mp3"}
+
+    class FakeClient:
+        async def get_track(self, artist_id, track_id):
+            assert artist_id == 123
+            assert track_id == 456
+            return FakeTrack()
+
+    @asynccontextmanager
+    async def fake_managed_client(identity_token=None):
+        yield FakeClient()
+
+    monkeypatch.setattr(server, "managed_client", fake_managed_client)
+
+    from epistemic_dj.audio.analysis import AudioFeatures
+
+    async def fake_analyze_track(streaming_url, *, max_duration=60.0):
+        assert streaming_url == "https://example.com/stream.mp3"
+        return AudioFeatures(
+            tempo_bpm=140.0,
+            rms_energy=0.15,
+            spectral_centroid_hz=2500.0,
+            onset_density_per_sec=5.0,
+            duration_analyzed_sec=max_duration,
+            beat_interval_cv=0.05,
+            spectral_bandwidth_hz=2200.0,
+        )
+
+    monkeypatch.setattr(server, "analyze_track", fake_analyze_track)
+
+    result = await server.audio_analyze_track(artist_id=123, track_id=456)
+
+    assert result["features"]["tempo_bpm"] == 140.0
+    assert result["vectors"]["kinetic_energy"] is not None
+    assert result["vectors"]["valence"] is None
+
+
+async def test_audio_analyze_track_raises_when_not_streamable(monkeypatch):
+    class FakeTrack:
+        streaming_url = None
+
+    class FakeClient:
+        async def get_track(self, artist_id, track_id):
+            return FakeTrack()
+
+    @asynccontextmanager
+    async def fake_managed_client(identity_token=None):
+        yield FakeClient()
+
+    monkeypatch.setattr(server, "managed_client", fake_managed_client)
+
+    with pytest.raises(ValueError, match="no streaming_url"):
+        await server.audio_analyze_track(artist_id=1, track_id=2)

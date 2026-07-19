@@ -15,7 +15,10 @@ separation quality.
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
+import aiohttp
 from bandcamp_async_api import BandcampAPIClient
 
 IDENTITY_TOKEN_ENV_VAR = "BANDCAMP_IDENTITY_TOKEN"
@@ -39,10 +42,36 @@ def get_identity_token() -> str:
     return token
 
 
-def get_client(identity_token: str | None = None) -> BandcampAPIClient:
-    """Build an authenticated client. Use as an async context manager:
+@asynccontextmanager
+async def managed_client(identity_token: str | None = None) -> AsyncGenerator[BandcampAPIClient]:
+    """Yields a BandcampAPIClient with a correctly-managed aiohttp session.
+
+    bandcamp_async_api's own BandcampAPIClient.__aexit__ -> session_close()
+    calls aiohttp.ClientSession.close() WITHOUT awaiting it (that method is
+    async) -- confirmed via a live 'coroutine was never awaited' /
+    'Unclosed client session' warning (empirica finding 663e980d). It only
+    skips its own (buggy) close path when a session was supplied externally
+    (session_overridden=True). Supplying our own session here, managed by
+    `async with aiohttp.ClientSession()`, sidesteps the bug entirely rather
+    than patching bandcamp_async_api itself -- keeps the fix local until/
+    unless it's worth an upstream PR.
+
+    identity_token is optional here -- pass None for unauthenticated
+    operations like search(). Callers that require auth (e.g. collection
+    fetch) should check for a token themselves before calling this.
+    """
+    async with aiohttp.ClientSession() as session:
+        yield BandcampAPIClient(session=session, identity_token=identity_token)
+
+
+def get_client(identity_token: str | None = None):
+    """Authenticated client context manager. Use as:
 
         async with get_client() as client:
             summary = await client.get_collection_summary()
+
+    Requires an identity_token (explicit or via BANDCAMP_IDENTITY_TOKEN env
+    var) -- raises MissingIdentityTokenError otherwise. For unauthenticated
+    operations, use managed_client() directly instead.
     """
-    return BandcampAPIClient(identity_token=identity_token or get_identity_token())
+    return managed_client(identity_token or get_identity_token())

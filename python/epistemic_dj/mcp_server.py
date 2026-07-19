@@ -8,12 +8,11 @@ epistemic-state-to-sound generation. Two servers, not a rewrite.
 
 from __future__ import annotations
 
-from bandcamp_async_api import BandcampAPIClient
-from bandcamp_async_api.models import CollectionItem
+from bandcamp_async_api.models import CollectionItem, SearchResultItem
 from mcp.server.fastmcp import FastMCP
 
 from epistemic_dj.bandcamp.adapter import collection_item_to_track
-from epistemic_dj.bandcamp.client import MissingIdentityTokenError, get_client
+from epistemic_dj.bandcamp.client import MissingIdentityTokenError, get_client, managed_client
 from epistemic_dj.models import MusicVectors, TastePatternType, TasteProfile, Track
 from epistemic_dj.taste import TasteStore
 
@@ -76,16 +75,41 @@ async def bandcamp_get_collection(count: int = 50) -> list[Track]:
 async def bandcamp_search(query: str) -> list[dict]:
     """Search Bandcamp for artists, albums, and tracks (no auth required).
 
-    Uses an unauthenticated client directly -- bandcamp_async_api's search()
-    doesn't touch the identity cookie, and get_client() always requires one,
-    so this deliberately bypasses it rather than forcing credentials for a
-    search that doesn't need them.
+    Uses managed_client() with no token -- search() doesn't touch the
+    identity cookie, and get_client() always requires one, so this
+    deliberately bypasses it rather than forcing credentials for a search
+    that doesn't need them.
     """
-    async with BandcampAPIClient() as client:
+    async with managed_client() as client:
         results = await client.search(query)
-        return [
-            {"type": r.type, "id": r.id, "name": r.name, "url": r.url} for r in results
-        ]
+        return [_search_result_to_dict(r) for r in results]
+
+
+@mcp.tool()
+async def bandcamp_search_candidates(queries: list[str]) -> list[dict]:
+    """Search Bandcamp with MULTIPLE queries and merge the results (OR, not AND).
+
+    A single query string is matched as a strict AND across all its words --
+    confirmed live (empirica finding e794fd8c): 'ghetto-funk breaks bootleg'
+    returned 0 results while 'big-beat mashup' returned 5. Use this instead
+    of bandcamp_search when you have several taste-relevant terms (e.g. from
+    a taste profile's pattern content) and want a broader, deduped candidate
+    pool rather than one narrow query. Results are deduped by (type, id).
+    """
+    async with managed_client() as client:
+        seen: set[tuple[str, int]] = set()
+        candidates: list[dict] = []
+        for query in queries:
+            for r in await client.search(query):
+                key = (r.type, r.id)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(_search_result_to_dict(r))
+        return candidates
+
+
+def _search_result_to_dict(r: SearchResultItem) -> dict:
+    return {"type": r.type, "id": r.id, "name": r.name, "url": r.url}
 
 
 @mcp.tool()

@@ -12,10 +12,11 @@ shape (a tuple mixing ContentBlock and dict isn't a valid Sequence[ContentBlock]
 -- an upstream stub gap, not a bug on our side.
 """
 
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import pytest
-from bandcamp_async_api.models import SearchResultAlbum
+from bandcamp_async_api.models import SearchResultAlbum, SearchResultTrack
 
 import epistemic_dj.mcp_server as server
 
@@ -26,6 +27,18 @@ async def _call_tool(name: str, arguments: dict) -> dict[str, Any]:
     return structured
 
 
+def _fake_managed_client(search_results_by_query: dict[str, list]):
+    class FakeClient:
+        async def search(self, query):
+            return search_results_by_query.get(query, [])
+
+    @asynccontextmanager
+    async def _managed_client(identity_token=None):
+        yield FakeClient()
+
+    return _managed_client
+
+
 async def test_all_expected_tools_are_registered():
     tools = await server.mcp.list_tools()
     names = {t.name for t in tools}
@@ -34,6 +47,7 @@ async def test_all_expected_tools_are_registered():
         "bandcamp_set_credentials",
         "bandcamp_get_collection",
         "bandcamp_search",
+        "bandcamp_search_candidates",
         "taste_log_finding",
         "taste_log_pattern",
         "taste_decay_pattern",
@@ -48,23 +62,38 @@ async def test_ping_via_call_tool():
 
 async def test_bandcamp_search_via_call_tool(monkeypatch):
     result_item = SearchResultAlbum(id=1, name="Some Album", url="https://x/y")
-
-    class FakeClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return None
-
-        async def search(self, query):
-            return [result_item]
-
-    monkeypatch.setattr(server, "BandcampAPIClient", lambda: FakeClient())
+    monkeypatch.setattr(
+        server, "managed_client", _fake_managed_client({"radiohead": [result_item]})
+    )
 
     structured = await _call_tool("bandcamp_search", {"query": "radiohead"})
     assert structured["result"] == [
         {"type": "album", "id": 1, "name": "Some Album", "url": "https://x/y"}
     ]
+
+
+async def test_bandcamp_search_candidates_merges_and_dedups(monkeypatch):
+    shared = SearchResultTrack(id=1, name="Shared Track", url="https://x/shared")
+    only_a = SearchResultAlbum(id=2, name="Only In A", url="https://x/a")
+    only_b = SearchResultAlbum(id=3, name="Only In B", url="https://x/b")
+
+    monkeypatch.setattr(
+        server,
+        "managed_client",
+        _fake_managed_client({
+            "query a": [shared, only_a],
+            "query b": [shared, only_b],  # shared appears in both -- must dedup
+        }),
+    )
+
+    structured = await _call_tool(
+        "bandcamp_search_candidates", {"queries": ["query a", "query b"]}
+    )
+    ids = [(r["type"], r["id"]) for r in structured["result"]]
+    assert len(ids) == 3  # not 4 -- the shared track deduped
+    assert ("track", 1) in ids
+    assert ("album", 2) in ids
+    assert ("album", 3) in ids
 
 
 async def test_bandcamp_get_collection_without_credentials_raises_via_call_tool():

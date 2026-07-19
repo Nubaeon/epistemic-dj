@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 import pytest
 from bandcamp_async_api.models import CollectionItem, CollectionSummary, SearchResultAlbum
 
@@ -59,16 +61,14 @@ async def test_bandcamp_search_works_without_credentials(monkeypatch):
     result_item = SearchResultAlbum(id=1, name="Some Album", url="https://x/y")
 
     class FakeClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return None
-
         async def search(self, query):
             return [result_item]
 
-    monkeypatch.setattr(server, "BandcampAPIClient", lambda: FakeClient())
+    @asynccontextmanager
+    async def fake_managed_client(identity_token=None):
+        yield FakeClient()
+
+    monkeypatch.setattr(server, "managed_client", fake_managed_client)
 
     results = await server.bandcamp_search("radiohead")
 

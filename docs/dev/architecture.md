@@ -152,3 +152,11 @@ uv run ruff check .  # lint
 uv run pyright       # typecheck
 uv run epistemic-dj-mcp   # run the MCP server
 ```
+
+**Gotcha**: if your shell has an unrelated `VIRTUAL_ENV` set (e.g. a tmux
+session venv), `uv run` can silently use *that* interpreter instead of
+`python/.venv`, despite printing a warning that claims it's being ignored.
+Symptom: `ModuleNotFoundError` for a dependency that's clearly in
+`pyproject.toml`, or a `pyright`/`pytest` result that doesn't match what
+you'd expect from the code. Fix: `unset VIRTUAL_ENV` before `uv run`
+commands, or run `echo $VIRTUAL_ENV` first to check.

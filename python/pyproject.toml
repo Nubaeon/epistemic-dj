@@ -53,6 +53,7 @@ dev = [
     # MUSDB18HQ (real separation-quality benchmarking) is a separate,
     # deliberate download from Zenodo, not something tests pull automatically.
     "musdb>=0.4",
+    "scikit-learn>=1.9.0",
 ]
 
 [build-system]

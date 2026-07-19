@@ -20,6 +20,14 @@ dependencies = [
     # no system binary needed (unlike aubio CLI, which the JS side uses
     # but isn't installed here).
     "librosa>=0.10",
+    # YouTube Music as a second discover()+measure() source (David,
+    # 2026-07-19, fair-use personal/research basis -- see
+    # docs/dev/track-calibration-loop.md). ytmusicapi: public search, no
+    # auth. yt-dlp: audio stream resolution -- must be Range-requested
+    # (empirica finding c2e9671b: googlevideo.com paces unranged full-file
+    # GETs to real-time playback speed).
+    "ytmusicapi>=1.12.1",
+    "yt-dlp>=2026.7.4",
 ]
 
 [project.scripts]

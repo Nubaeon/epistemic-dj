@@ -31,14 +31,30 @@ class AudioFeatures(BaseModel):
     )
 
 
-async def download_stream(url: str) -> Path:
-    """Downloads an audio stream (e.g. Bandcamp's mp3-128 streaming_url) to a
-    temp file. Caller is responsible for deleting it.
+async def download_stream(
+    url: str,
+    *,
+    suffix: str = ".mp3",
+    headers: dict[str, str] | None = None,
+    range_bytes: int | None = None,
+) -> Path:
+    """Downloads an audio stream to a temp file. Caller deletes it.
+
+    range_bytes, when set, sends `Range: bytes=0-{range_bytes}` instead of
+    fetching the whole file -- needed for YouTube's googlevideo.com CDN,
+    which paces unranged full-file GETs to roughly real-time playback speed
+    (confirmed live: a 3.2MB/202s file took >12s for the first 376KB
+    unranged, vs. 0.2s for an explicit 500KB Range request on the identical
+    URL). Bandcamp's stream has no such pacing, so its callers don't need
+    this -- but the parameter is harmless there either way.
     """
+    request_headers = dict(headers) if headers else {}
+    if range_bytes is not None:
+        request_headers["Range"] = f"bytes=0-{range_bytes}"
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        resp = await client.get(url)
+        resp = await client.get(url, headers=request_headers)
         resp.raise_for_status()
-    fd, path_str = tempfile.mkstemp(suffix=".mp3")
+    fd, path_str = tempfile.mkstemp(suffix=suffix)
     path = Path(path_str)
     with open(fd, "wb") as f:
         f.write(resp.content)
@@ -78,8 +94,17 @@ def analyze_file(path: Path, *, max_duration: float = 60.0) -> AudioFeatures:
     )
 
 
-async def analyze_track(streaming_url: str, *, max_duration: float = 60.0) -> AudioFeatures:
-    path = await download_stream(streaming_url)
+async def analyze_track(
+    streaming_url: str,
+    *,
+    max_duration: float = 60.0,
+    suffix: str = ".mp3",
+    headers: dict[str, str] | None = None,
+    range_bytes: int | None = None,
+) -> AudioFeatures:
+    path = await download_stream(
+        streaming_url, suffix=suffix, headers=headers, range_bytes=range_bytes
+    )
     try:
         return analyze_file(path, max_duration=max_duration)
     finally:

@@ -66,7 +66,7 @@ async def test_download_stream_writes_real_bytes(monkeypatch, tmp_path):
         async def __aexit__(self, *a):
             return None
 
-        async def get(self, url):
+        async def get(self, url, headers=None):
             return FakeResponse()
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
@@ -74,6 +74,42 @@ async def test_download_stream_writes_real_bytes(monkeypatch, tmp_path):
     path = await download_stream("https://example.com/track.mp3")
     try:
         assert path.read_bytes() == b"fake-mp3-bytes"
+    finally:
+        path.unlink()
+
+
+async def test_download_stream_sends_range_header_when_requested(monkeypatch, tmp_path):
+    import httpx
+
+    class FakeResponse:
+        content = b"partial-bytes"
+
+        def raise_for_status(self):
+            pass
+
+    sent_headers = {}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def get(self, url, headers=None):
+            sent_headers.update(headers or {})
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
+
+    path = await download_stream(
+        "https://googlevideo.com/x", suffix=".webm", range_bytes=500_000,
+        headers={"User-Agent": "test-agent"},
+    )
+    try:
+        assert sent_headers["Range"] == "bytes=0-500000"
+        assert sent_headers["User-Agent"] == "test-agent"
+        assert path.suffix == ".webm"
     finally:
         path.unlink()
 
@@ -92,7 +128,7 @@ async def test_analyze_track_downloads_and_analyzes(monkeypatch, click_track_fil
     copy_path = click_track_file.parent / "click_copy.wav"
     shutil.copy(click_track_file, copy_path)
 
-    async def fake_download_copy(url):
+    async def fake_download_copy(url, **kwargs):
         return copy_path
 
     monkeypatch.setattr(

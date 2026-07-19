@@ -248,3 +248,48 @@ class TasteProfile(BaseModel):
     findings: list[TasteFinding]
     patterns: list[TastePattern]
     vectors: UserTasteVectors | None = None
+
+
+class TrackPrediction(BaseModel):
+    """A title/tag-based audio-feature forecast for one candidate track,
+    resolved against real measurement once audio_analyze_track() runs.
+
+    Standalone product data (see docs/dev/track-calibration-loop.md) --
+    deliberately NOT an Empirica assumption artifact, mirroring the same
+    "keep product data out of the AI's own epistemic tracking" call already
+    made for TasteStore. predicted_kinetic_energy/confidence are a genuine
+    judgment call from title/tags/genre-text alone, made before measurement;
+    measured_vectors/verified/delta/resolved_at stay None until resolved.
+    """
+
+    id: str
+    source: str  # "bandcamp" | "youtube"
+    track_ref: str  # e.g. "artist_id:track_id" or a video id
+    track_name: str
+    term: str  # search term / genre tag this candidate came from
+    predicted_kinetic_energy: Scalar
+    predicted_vectors: MusicVectors | None = None
+    confidence: Scalar = Field(description="Stated P(confirmed) -- the Brier-scoreable forecast.")
+    practitioner_id: str
+    created_at: datetime
+
+    measured_vectors: MusicVectors | None = None
+    verified: bool | None = None
+    delta: Scalar | None = Field(
+        default=None,
+        description="abs(predicted_kinetic_energy - measured kinetic_energy) once resolved.",
+    )
+    resolved_at: datetime | None = None
+
+
+class BrierResult(BaseModel):
+    """mean((confidence - float(verified))^2) over resolved TrackPredictions
+    matching a filter -- epistemic-dj's own computation, not a call into
+    Empirica's calibration-report (that scores the practitioner's general
+    self-assessment, a different signal -- see track-calibration-loop.md).
+    """
+
+    brier_score: Scalar | None = Field(
+        default=None, description="None when n=0 -- no fabricated score from an empty sample."
+    )
+    n: int

@@ -3,24 +3,38 @@ a real network download -- keeps tests fast and offline while still
 exercising the real librosa analysis path, not a mock of it.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import soundfile as sf
 
-from epistemic_dj.audio.analysis import analyze_file, analyze_track, download_stream
+from epistemic_dj.audio.analysis import (
+    _aggregate_features,
+    _sample_offsets,
+    analyze_file,
+    analyze_track,
+    download_stream,
+    sample_track,
+)
 
 SAMPLE_RATE = 22050
 
 
-def _make_click_track(bpm: float, duration_sec: float = 20.0) -> np.ndarray:
+def _make_click_track(
+    bpm: float, duration_sec: float = 20.0, silence_lead_in: float = 0.0
+) -> np.ndarray:
     """A train of short clicks at exactly `bpm`, loud enough for librosa's
-    onset/beat detectors to lock onto reliably.
+    onset/beat detectors to lock onto reliably. silence_lead_in prepends
+    true silence (no clicks) -- simulates a track's slow/quiet intro, for
+    testing that offset-based sampling correctly skips past it.
     """
     interval = 60.0 / bpm
-    audio = np.zeros(int(SAMPLE_RATE * duration_sec), dtype=np.float32)
+    total = duration_sec + silence_lead_in
+    audio = np.zeros(int(SAMPLE_RATE * total), dtype=np.float32)
     click = np.sin(2 * np.pi * 1000 * np.arange(int(SAMPLE_RATE * 0.02)) / SAMPLE_RATE)
-    t = 0.0
-    while t < duration_sec:
+    t = silence_lead_in
+    while t < total:
         start = int(t * SAMPLE_RATE)
         end = min(start + len(click), len(audio))
         audio[start:end] += click[: end - start]
@@ -32,6 +46,18 @@ def _make_click_track(bpm: float, duration_sec: float = 20.0) -> np.ndarray:
 def click_track_file(tmp_path):
     audio = _make_click_track(bpm=140.0)
     path = tmp_path / "click.wav"
+    sf.write(path, audio, SAMPLE_RATE)
+    return path
+
+
+@pytest.fixture
+def intro_then_click_track_file(tmp_path):
+    """60s of silence followed by a real 140bpm click track -- mirrors the
+    real-world case that motivated offset-based sampling (a track with a
+    slow/silent intro before the main content starts).
+    """
+    audio = _make_click_track(bpm=140.0, duration_sec=30.0, silence_lead_in=60.0)
+    path = tmp_path / "intro_then_click.wav"
     sf.write(path, audio, SAMPLE_RATE)
     return path
 
@@ -112,6 +138,83 @@ async def test_download_stream_sends_range_header_when_requested(monkeypatch, tm
         assert path.suffix == ".webm"
     finally:
         path.unlink()
+
+
+def test_analyze_file_offset_skips_silent_intro(intro_then_click_track_file):
+    at_start = analyze_file(intro_then_click_track_file, offset=0.0, max_duration=15.0)
+    past_intro = analyze_file(intro_then_click_track_file, offset=65.0, max_duration=15.0)
+
+    assert at_start.onset_density_per_sec == pytest.approx(0.0, abs=0.01)
+    assert past_intro.onset_density_per_sec > 0.5
+
+
+def test_sample_offsets_never_starts_before_min_offset():
+    offsets = _sample_offsets(track_duration_sec=200.0, min_offset=45.0, window=15.0)
+    assert all(o >= 45.0 for o in offsets)
+    assert offsets == sorted(offsets)
+
+
+def test_sample_offsets_covers_beginning_middle_end_spread():
+    offsets = _sample_offsets(track_duration_sec=300.0, min_offset=45.0, window=15.0)
+    assert len(offsets) == 3
+    assert offsets[0] == pytest.approx(45.0)
+    assert offsets[-1] == pytest.approx(285.0)  # 300 - 15
+    assert 45.0 < offsets[1] < 285.0
+
+
+def test_sample_offsets_degrades_gracefully_for_short_tracks():
+    offsets = _sample_offsets(track_duration_sec=50.0, min_offset=45.0, window=15.0)
+    assert all(o >= 0.0 for o in offsets)
+    assert all(o + 15.0 <= 50.0 + 1e-6 for o in offsets)
+
+
+def test_aggregate_features_takes_the_mean():
+    from epistemic_dj.audio.analysis import AudioFeatures
+
+    samples = [
+        AudioFeatures(
+            tempo_bpm=100.0, rms_energy=0.1, spectral_centroid_hz=1000.0,
+            onset_density_per_sec=2.0, duration_analyzed_sec=15.0,
+            beat_interval_cv=0.1, spectral_bandwidth_hz=1000.0,
+        ),
+        AudioFeatures(
+            tempo_bpm=200.0, rms_energy=0.3, spectral_centroid_hz=3000.0,
+            onset_density_per_sec=6.0, duration_analyzed_sec=15.0,
+            beat_interval_cv=0.3, spectral_bandwidth_hz=3000.0,
+        ),
+    ]
+
+    aggregated = _aggregate_features(samples)
+
+    assert aggregated.tempo_bpm == pytest.approx(150.0)
+    assert aggregated.rms_energy == pytest.approx(0.2)
+    assert aggregated.duration_analyzed_sec == pytest.approx(30.0)  # summed, not averaged
+
+
+async def test_sample_track_downloads_once_and_analyzes_multiple_offsets(
+    monkeypatch, intro_then_click_track_file
+):
+    captured_range = {}
+
+    async def fake_download_stream(url, *, suffix=".mp3", headers=None, range_bytes=None):
+        captured_range["range_bytes"] = range_bytes
+        return intro_then_click_track_file
+
+    monkeypatch.setattr(
+        "epistemic_dj.audio.analysis.download_stream", fake_download_stream
+    )
+    # prevent the fixture file itself from being deleted by sample_track's cleanup
+    monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: None)
+
+    features = await sample_track(
+        "https://example.com/track.mp3", track_duration_sec=90.0, min_offset=60.0, window=15.0,
+    )
+
+    assert captured_range["range_bytes"] is not None
+    assert captured_range["range_bytes"] > 0
+    # aggregated across offsets that include the silent intro and the real
+    # click content -- should land strictly between "all silence" and "all clicks"
+    assert features.onset_density_per_sec > 0.0
 
 
 async def test_analyze_track_downloads_and_analyzes(monkeypatch, click_track_file):

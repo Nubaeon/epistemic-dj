@@ -1,7 +1,12 @@
-"""Downloads a Bandcamp audio stream and extracts real features via librosa.
+"""Downloads a Bandcamp/YouTube audio stream and extracts real features via
+librosa, sampling multiple points across the track rather than trusting a
+single from-the-start excerpt.
 
-Only analyzes the first `max_duration` seconds (default 60s) -- taste-
-matching features don't need the full track, and this keeps analysis fast.
+Analyzing only the first N seconds from position 0 is unreliable -- confirmed
+live (empirica finding e7214d5e): the same track measured 99 BPM at a 30s
+window vs. 152 BPM at 45s, because it has a slow/quiet intro. sample_track()
+fixes this by never starting a window before MIN_OFFSET_SEC and sampling
+beginning/middle/end, aggregating rather than trusting one window.
 """
 
 from __future__ import annotations
@@ -61,8 +66,8 @@ async def download_stream(
     return path
 
 
-def analyze_file(path: Path, *, max_duration: float = 60.0) -> AudioFeatures:
-    y, sr = librosa.load(str(path), duration=max_duration, mono=True)
+def analyze_file(path: Path, *, offset: float = 0.0, max_duration: float = 60.0) -> AudioFeatures:
+    y, sr = librosa.load(str(path), offset=offset, duration=max_duration, mono=True)
 
     tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
     tempo_bpm = float(np.atleast_1d(tempo)[0])
@@ -109,3 +114,74 @@ async def analyze_track(
         return analyze_file(path, max_duration=max_duration)
     finally:
         path.unlink(missing_ok=True)
+
+
+DEFAULT_MIN_OFFSET_SEC = 45.0
+DEFAULT_SAMPLE_WINDOW_SEC = 15.0
+DEFAULT_MP3_BITRATE_KBPS = 128.0  # Bandcamp's mp3-128 stream, fixed
+
+
+def estimate_bytes_for_seconds(
+    seconds: float, bitrate_kbps: float, safety_margin: float = 1.3
+) -> int:
+    return int((bitrate_kbps * 1000 / 8) * seconds * safety_margin)
+
+
+def _sample_offsets(
+    track_duration_sec: float, min_offset: float, window: float
+) -> list[float]:
+    """Beginning/middle/end offsets, each staying at least min_offset in
+    (never analyze from position 0 -- see module docstring) and leaving room
+    for a full `window`-second read without running past the track end.
+    Degrades gracefully to fewer, deduplicated offsets for short tracks.
+    """
+    latest_start = max(0.0, track_duration_sec - window)
+    beginning = min(min_offset, latest_start)
+    end = latest_start
+    middle = min(max(beginning, (track_duration_sec - window) / 2), end)
+    return sorted({round(beginning, 2), round(middle, 2), round(end, 2)})
+
+
+def _aggregate_features(samples: list[AudioFeatures]) -> AudioFeatures:
+    return AudioFeatures(
+        tempo_bpm=float(np.mean([s.tempo_bpm for s in samples])),
+        rms_energy=float(np.mean([s.rms_energy for s in samples])),
+        spectral_centroid_hz=float(np.mean([s.spectral_centroid_hz for s in samples])),
+        onset_density_per_sec=float(np.mean([s.onset_density_per_sec for s in samples])),
+        duration_analyzed_sec=float(sum(s.duration_analyzed_sec for s in samples)),
+        beat_interval_cv=float(np.mean([s.beat_interval_cv for s in samples])),
+        spectral_bandwidth_hz=float(np.mean([s.spectral_bandwidth_hz for s in samples])),
+    )
+
+
+async def sample_track(
+    streaming_url: str,
+    *,
+    track_duration_sec: float,
+    bitrate_kbps: float = DEFAULT_MP3_BITRATE_KBPS,
+    min_offset: float = DEFAULT_MIN_OFFSET_SEC,
+    window: float = DEFAULT_SAMPLE_WINDOW_SEC,
+    suffix: str = ".mp3",
+    headers: dict[str, str] | None = None,
+) -> AudioFeatures:
+    """Samples beginning/middle/end windows of a track and aggregates
+    (mean) them into one AudioFeatures, instead of trusting a single
+    from-the-start excerpt (see module docstring for why that's unreliable).
+
+    Downloads ONE Range request covering bytes 0..(furthest sample point) --
+    not per-sample downloads -- then runs librosa.load(offset=...) against
+    that single file per sample. Confirmed live that a byte range cut mid-
+    file still decodes correctly via librosa's offset seeking as long as the
+    container header (byte 0 onward) is included, which this guarantees.
+    """
+    offsets = _sample_offsets(track_duration_sec, min_offset, window)
+    furthest_point = offsets[-1] + window
+    range_bytes = estimate_bytes_for_seconds(furthest_point, bitrate_kbps)
+    path = await download_stream(
+        streaming_url, suffix=suffix, headers=headers, range_bytes=range_bytes
+    )
+    try:
+        samples = [analyze_file(path, offset=o, max_duration=window) for o in offsets]
+    finally:
+        path.unlink(missing_ok=True)
+    return _aggregate_features(samples)

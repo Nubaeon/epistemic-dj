@@ -46,20 +46,31 @@ class MusicVectors(BaseModel):
 
     kinetic_energy: Scalar = Field(
         description="Perceived drive/propulsion (tempo + rhythmic density + percussive "
-        "emphasis combined, not raw BPM)."
-    )
-    valence: Scalar = Field(description="Emotional brightness/darkness.")
-    vocal_density: Scalar = Field(
-        description="0 = fully instrumental, 1 = vocal-dominant/lyrically dense."
-    )
-    structural_repetition: Scalar = Field(
-        description="Loopable/cyclical vs. through-composed. The most load-bearing vector "
-        "for the focus-session use case: high = background-compatible, low = demands "
-        "foreground attention."
+        "emphasis combined, not raw BPM). Derivable from tempo/onset-density/RMS energy."
     )
     cognitive_load: Scalar = Field(
         description="How much foreground attention the track demands. Distinct from "
-        "structural_repetition -- a repetitive but harsh/loud track can still be high-load."
+        "structural_repetition -- a repetitive but harsh/loud track can still be high-load. "
+        "Derivable from onset-density/spectral-bandwidth."
+    )
+    valence: Scalar | None = Field(
+        default=None,
+        description="Emotional brightness/darkness. NOT derivable from tempo/energy/"
+        "spectral-centroid alone -- needs real key/mode (major vs. minor) detection via "
+        "chroma/tonal analysis, not built yet. None rather than a guessed value.",
+    )
+    vocal_density: Scalar | None = Field(
+        default=None,
+        description="0 = fully instrumental, 1 = vocal-dominant/lyrically dense. Needs "
+        "vocal/source detection (stem separation or a vocal-activity classifier), not "
+        "built yet. None rather than a guessed value.",
+    )
+    structural_repetition: Scalar | None = Field(
+        default=None,
+        description="Loopable/cyclical vs. through-composed. The most load-bearing vector "
+        "for the focus-session use case, but needs full-track self-similarity/structural "
+        "segmentation analysis (not just a 60s excerpt), not built yet. None rather than "
+        "a guessed value.",
     )
 
     # Discovery-tuning tier -- weighted by ConsumptionMode.DISCOVERY

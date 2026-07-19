@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import librosa
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AudioFeatures(BaseModel):
@@ -21,6 +21,14 @@ class AudioFeatures(BaseModel):
     spectral_centroid_hz: float
     onset_density_per_sec: float
     duration_analyzed_sec: float
+    beat_interval_cv: float = Field(
+        description="Coefficient of variation of inter-beat intervals -- low = "
+        "steady/regular groove, high = irregular/loose timing."
+    )
+    spectral_bandwidth_hz: float = Field(
+        description="Spread of frequency content around the centroid -- proxy for "
+        "how many simultaneous sonic layers/how busy the mix is."
+    )
 
 
 async def download_stream(url: str) -> Path:
@@ -40,16 +48,24 @@ async def download_stream(url: str) -> Path:
 def analyze_file(path: Path, *, max_duration: float = 60.0) -> AudioFeatures:
     y, sr = librosa.load(str(path), duration=max_duration, mono=True)
 
-    tempo, _beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
     tempo_bpm = float(np.atleast_1d(tempo)[0])
 
     rms_energy = float(np.mean(librosa.feature.rms(y=y)))
     spectral_centroid_hz = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
+    spectral_bandwidth_hz = float(np.mean(librosa.feature.spectral_bandwidth(y=y, sr=sr)))
 
     onset_env = librosa.onset.onset_strength(y=y, sr=sr)
     onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr)
     duration_analyzed_sec = len(y) / sr
     onset_density_per_sec = len(onsets) / duration_analyzed_sec if duration_analyzed_sec else 0.0
+
+    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+    beat_intervals = np.diff(beat_times)
+    if len(beat_intervals) >= 2 and np.mean(beat_intervals) > 0:
+        beat_interval_cv = float(np.std(beat_intervals) / np.mean(beat_intervals))
+    else:
+        beat_interval_cv = 0.0
 
     return AudioFeatures(
         tempo_bpm=tempo_bpm,
@@ -57,6 +73,8 @@ def analyze_file(path: Path, *, max_duration: float = 60.0) -> AudioFeatures:
         spectral_centroid_hz=spectral_centroid_hz,
         onset_density_per_sec=onset_density_per_sec,
         duration_analyzed_sec=duration_analyzed_sec,
+        beat_interval_cv=beat_interval_cv,
+        spectral_bandwidth_hz=spectral_bandwidth_hz,
     )
 
 

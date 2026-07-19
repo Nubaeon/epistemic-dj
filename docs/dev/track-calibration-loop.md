@@ -1,12 +1,27 @@
 # Track-Prediction Calibration Loop — Spec
 
-Status: **Phase A specced for build. Phase B/C design-level, not yet built.**
+Status: **Standalone architecture (v2). Ready to build.**
 Origin: David's observation that anti-patterns (dead-ends/mistakes) are the
 strongest calibration signal in engineering work, and that music-taste
 prediction might generate that signal *faster and cheaper* than most
 engineering domains — every track is a fast, cheap, atomic, immediately
 falsifiable prediction, unlike incident-postmortem-timescale feedback in most
 critical-software work.
+
+**Revision note (2026-07-19)**: v1 of this spec routed the predict/measure/
+resolve loop through the Empirica CLI (`assumption-log` /
+`resolve-artifacts` / `calibration-report`). David corrected that: if
+epistemic-dj is going to be a standalone product, its core knowledge graph
+can't require the `empirica` package/CLI at runtime — that reads as "just
+another Empirica product" rather than its own thing, even if the underlying
+design pattern (predict → measure → resolve → confidence-decayed pattern) is
+the same one Empirica already uses. Confirmed via `grep` that `epistemic_dj/`
+has zero existing `empirica` package imports today, matching the standalone
+`TasteStore` decision already made earlier — this extends that same
+principle to the new calibration graph rather than introducing a new one.
+**This does not change how *I* (the practitioner building this) use
+Empirica for my own dev-process discipline** — PREFLIGHT/CHECK/POSTFLIGHT
+stays exactly as-is; that's orthogonal to what ships in the product.
 
 ## The core idea
 
@@ -15,179 +30,180 @@ never *predicts* first, so a real audio result is just a data point, not a
 calibration signal — there's nothing to confirm or refute.
 
 The fix: before running real audio analysis on a candidate track, state a
-prediction (from title/tags/genre-text alone — no audio) as an Empirica
-**assumption**, with a stated confidence. After measurement, **resolve** that
-assumption as confirmed or refuted against what was actually measured. Do
-this enough times across enough genre-terms and the resolved-assumption graph
-*is* the "which genre-tags are trustworthy" knowledge base — filed under
-Empirica's existing artifact substrate, not a new parallel store (same call
-made for the `TastePattern`/`TasteFinding` design in `architecture.md` — see
-"The taste engine reuses Empirica's artifact substrate").
+prediction (from title/tags/genre-text alone — no audio) with a stated
+confidence. After measurement, resolve that prediction as confirmed or
+refuted against what was actually measured. Do this enough times across
+enough genre-terms/platforms and the resolved-prediction graph *is* the
+"which genre-tags are trustworthy" knowledge base — owned entirely by
+epistemic-dj's own store.
 
-## Why reuse `assumption` → `resolve-artifacts`, not a new schema
+## Standalone `CalibrationStore` — mirrors `TasteStore`, doesn't depend on it
 
-Checked against the CLI rather than assumed: `resolve-artifacts` already
-supports `type: assumption` resolution with a `verified: true/false` field
-(`empirica resolve-artifacts --schema`). That is *exactly* the predict/verify
-primitive this loop needs — a stated confidence at prediction time, a binary
-verified/refuted outcome at resolution time. No new storage layer required.
+Same conceptual shape Empirica's `assumption` → `resolve-artifacts(verified)`
+gives, reimplemented as its own SQLite-backed store in
+`epistemic_dj/calibration/store.py`, following `TasteStore`'s exact
+established pattern (`epistemic_dj/taste/store.py`: plain `sqlite3`, a
+`_SCHEMA` string, pydantic models for I/O, no external DB dependency).
 
-## Phase A — per-track transaction
+```python
+class TrackPrediction(BaseModel):
+    id: str
+    source: str              # "bandcamp" | "youtube"
+    track_ref: str            # e.g. "artist_id:track_id" or a video id
+    track_name: str
+    term: str                 # search term / genre tag this candidate came from
+    predicted_kinetic_energy: Scalar
+    predicted_vectors: MusicVectors | None = None   # fuller prediction, optional
+    confidence: Scalar        # stated P(confirmed)
+    practitioner_id: str      # who made the call -- see Phase C
+    created_at: datetime
+    # resolution -- nullable until measured
+    measured_vectors: MusicVectors | None = None
+    verified: bool | None = None
+    delta: Scalar | None = None
+    resolved_at: datetime | None = None
+```
+
+Store methods (mirroring `TasteStore.log_finding` / `.decay_pattern` shape):
+
+- `log_prediction(source, track_ref, track_name, term, predicted_kinetic_energy, confidence, practitioner_id="default", predicted_vectors=None) -> TrackPrediction`
+- `resolve_prediction(prediction_id, measured_vectors: MusicVectors, tolerance=0.2) -> TrackPrediction` —
+  computes `delta = abs(predicted_kinetic_energy - measured_vectors.kinetic_energy)`,
+  `verified = delta <= tolerance`, persists both, stamps `resolved_at`.
+- `get_predictions(source=None, term=None, practitioner_id=None, resolved_only=False) -> list[TrackPrediction]`
+- `brier_score(term_prefix=None, practitioner_id=None) -> BrierResult` —
+  `mean((confidence - float(verified))²)` over resolved rows matching the
+  filters, plus `n`. This is epistemic-dj's own Brier computation — it does
+  NOT call `calibration-report`. (v1 spec conflated "Brier score" with
+  Empirica's existing command; that command scores the *practitioner's*
+  general self-assessment, a different signal — see below.)
+
+The `practitioner_id` column costs nothing now and directly serves Phase C
+(explicitly requested, not speculative) — default it to a plain string
+identifying whoever's running the loop (e.g. a session or agent label), not
+hardcoded to one value.
+
+## Phase A — per-track transaction (single practitioner, Bandcamp + YouTube)
 
 **One transaction per track** (not one transaction per step — the three
 steps below are *tasks* within a single PREFLIGHT/POSTFLIGHT window, matching
 David's "goal is a track, tasks are the things to be done for that track").
+The transaction discipline is still mine (the practitioner's) — the
+*product* data (the prediction/measurement/resolution itself) goes to
+`CalibrationStore`, not to an Empirica artifact.
 
 ```
-Goal: "Track: <title> [<term>]"
-  Task 1: predict  — read title/tags/url, form an actual belief about the
-                      derivable MusicVectors dims (kinetic_energy first —
-                      see "Primary confirm/refute dimension" below), log as
-                      an assumption with a stated P(confirmed).
-  Task 2: measure   — audio_analyze_track(artist_id, track_id)
-  Task 3: compare   — diff predicted vs. measured, resolve the assumption
-                      (verified: true/false), log a finding (confirmed) or
-                      dead_end (refuted) capturing what was learned.
+Goal: "Track: <title> [<term>, <source>]"
+  Task 1: predict  — read title/tags/url, form an actual belief about
+                      predicted_kinetic_energy + P(confirmed), call
+                      CalibrationStore.log_prediction(...).
+  Task 2: measure   — audio_analyze_track() (Bandcamp) or the new YouTube
+                      measure() path.
+  Task 3: compare   — CalibrationStore.resolve_prediction(...); if my own
+                      PREFLIGHT/POSTFLIGHT for this transaction turns up
+                      something reusable about MY predictive judgment
+                      (not the track), that's still fair game for a real
+                      empirica finding/dead-end -- the distinction is
+                      "product data" (CalibrationStore) vs. "my own
+                      epistemic-transaction learning" (Empirica), not
+                      "never touch Empirica during this work."
 ```
 
-**PREFLIGHT**: `work_type=data` (not `code` — no git/pytest signal is
-relevant to a measurement transaction; `data` down-weights those the same
-way `research`/`docs` do for their domains). `task_context` names the track
-+ term. Standard 13-vector self-assessment as normal — this is a *separate*
-signal from the track-prediction confidence (see "Two distinct calibration
-signals" below); don't conflate PREFLIGHT `know`/`uncertainty` with the
-predicted-vector confidence.
-
-**Task 1 — predict** (noetic, before CHECK):
-
-```bash
-empirica assumption-log \
-  --assumption "Track '<title>' (term=<genre-term>): predicted kinetic_energy≈<X>, P(confirmed)=<Y>" \
-  --confidence <Y> \
-  --domain "genre:<term>"
-```
+**PREFLIGHT**: `work_type=data`. `task_context` names the track + term +
+source. Standard 13-vector self-assessment as normal — this is a *separate*
+signal from the track-prediction confidence (see below); don't conflate
+PREFLIGHT `know`/`uncertainty` with `predicted_kinetic_energy`'s confidence.
 
 The prediction is a real judgment call from title/tags/genre-text — not a
 rule-based lookup. The point is calibrating the *practitioner's* predictive
 judgment (vectors are beliefs), so this has to be an actual read-and-decide
 step, not a canned heuristic standing in for one.
 
-**Task 2 — measure** (praxic, after CHECK): call `audio_analyze_track`,
-already built and tested (commit `27d325c`).
-
-**Task 3 — compare + resolve**:
-
-```bash
-empirica resolve-artifacts - <<'EOF'
-{"resolutions": [{"type": "assumption", "id": "<assumption-uuid>",
-                   "resolution": "measured kinetic_energy=<M> (predicted <X>, delta=<D>)",
-                   "verified": <true|false>}]}
-EOF
-```
-
-Then `finding-log` (confirmed — capture the reusable pattern, e.g. "'power
-breaks'-titled tracks reliably predict high kinetic_energy") or `deadend-log`
-(refuted — approach = "assumed <term> title predicts <profile>", why_failed
-= the measured mismatch) via `log-artifacts` so the finding/dead-end is wired
-to the resolved assumption (`relation: evidence`).
-
-**POSTFLIGHT**: report actual completion/change for this one track's
-prediction-verify cycle. Batch multiple tracks as multiple transactions
-within one session, not one giant transaction — keeps each POSTFLIGHT's
-delta interpretable per-track rather than averaged into mush.
-
 ### Primary confirm/refute dimension
 
 Genre-tags most directly claim tempo/energy, so v1 scores confirm/refute
 against **`kinetic_energy` only**, tolerance `|predicted − measured| ≤ 0.2`
 → confirmed. The other three derivable dims (`cognitive_load`,
-`groove_consistency`, `textural_density`) are still predicted and logged
-(richer signal in the finding/dead-end body, and a plain RMSE across all
-four is worth computing once there's enough data), but don't gate the
-binary verified/refuted call — a single, well-defined outcome per track is
-what makes the confidence-vs-verified pair actually Brier-scoreable, and
-folding four dims into one confirm/refute call would just make the
-threshold arbitrary in a different way. This tolerance is a starting
-heuristic, not derived from data — expect to revise once ~30-50 tracks
-exist to check it against.
+`groove_consistency`, `textural_density`) are still predicted and stored
+(richer signal, and a plain RMSE across all four is worth computing once
+there's enough data), but don't gate the binary verified/refuted call — a
+single, well-defined outcome per track is what makes confidence-vs-verified
+actually Brier-scoreable, and folding four dims into one confirm/refute call
+would just make the threshold arbitrary in a different way. This tolerance
+is a starting heuristic, not derived from data — expect to revise once
+~30-50 tracks exist to check it against.
 
-### Two distinct calibration signals — don't conflate them
+### Two distinct calibration signals — still don't conflate them
 
-1. **General practitioner Brier score** (`calibration-report --ai-id
-   epistemic-dj --brier`) — already live today (verified: real output,
-   n_predictions=50 as of this write-up). Scores the practitioner's own
-   13-vector PREFLIGHT self-assessment against grounded evidence. Running
-   many per-track transactions sharpens this *as a side effect* (more
-   transactions = more n_predictions) but it is NOT measuring genre-tag
-   prediction accuracy — it's measuring "is Claude well-calibrated about
-   its own general epistemic state."
-2. **Domain-specific track-prediction calibration** (assumption confidence
-   vs. `verified`) — the new signal this spec builds. **Open question, not
-   yet verified**: does `calibration-report --brier` already ingest
-   resolved-assumption confidence/verified pairs as an evidence source, or
-   does genre-tag-prediction Brier scoring need a separate aggregation
-   (e.g., pull all resolved assumptions with `domain` matching `genre:*`
-   via `project-search`/`investigate` and compute `mean((confidence -
-   verified)²)` directly)? Check before claiming an automatic combined
-   score — don't assume the general command already covers this just
-   because both use the word "Brier."
+1. **General practitioner Brier score** (`empirica calibration-report
+   --ai-id epistemic-dj --brier`) — scores *my* general 13-vector PREFLIGHT
+   self-assessment against grounded evidence. Running many per-track
+   transactions sharpens this as a side effect (more transactions = more
+   n_predictions), but it's about my own epistemic self-calibration, not
+   genre-tag prediction accuracy.
+2. **Product Brier score** (`CalibrationStore.brier_score()`) — the new
+   thing this spec builds, scoring genre/title-text prediction accuracy
+   against real audio measurement. Fully owned by epistemic-dj, computed
+   directly from `TrackPrediction` rows, no Empirica dependency.
 
-## Phase B — YouTube Music as a second source (design-level, not built)
+## Phase B — YouTube Music as a second source (folded into near-term scope)
 
 David's framing: discovery is platform-agnostic (the music is the same
 everywhere), measurement is platform-dependent (quality/downloadability
 differ). Split the two capabilities explicitly rather than assuming one
-adapter does both:
+adapter does both — mirrors the existing `bandcamp/client.py` +
+`bandcamp/adapter.py` split:
 
 - **`discover()`** — search, metadata only. Bandcamp: `client.search()`
-  (already built). YouTube Music: `ytmusicapi` (public search doesn't
-  require login).
+  (already built). YouTube Music: `ytmusicapi` (public search, no login
+  required).
 - **`measure()`** — needs a real downloadable/streamable audio source.
   Bandcamp: `get_track().streaming_url["mp3-128"]` (already built). YouTube:
-  `yt-dlp` audio extraction — same "unofficial API access" category as
-  `bandcamp_async_api` already is, but a materially different ToS risk
-  profile (YouTube's terms are more actively hostile to extraction than
-  Bandcamp's). Not equivalent to the torrent option already ruled out, but
-  worth a named, explicit go/no-go before building — not something to
-  quietly bundle into "just another adapter."
+  `yt-dlp` audio extraction.
 
-No code proposed here yet — this is scoped, not built. Revisit once Phase A
-has produced enough resolved assumptions to know the loop mechanics actually
-work end-to-end.
+**YouTube extraction: approved (David, 2026-07-19) under fair-use personal/
+research use.** Formal YouTube relationship (partnership/API terms) is
+explicitly deferred to an eventual production conversation, not blocking
+this build — David's framing: if this drives YouTube usage/subscriptions,
+that's additive for them, not adversarial, so a future formal conversation
+is plausible rather than a hard legal blocker. Noted here so the record is
+honest about the current basis (fair use, personal/research scope) versus
+what a shipped-product-at-scale posture would need later.
 
-## Phase C — parallel practitioners on the shared practice (design-level)
+`epistemic_dj/youtube/client.py` + `epistemic_dj/youtube/adapter.py`,
+mirroring the Bandcamp module shape: a thin wrapper managing `ytmusicapi`
+search + `yt-dlp` extraction, mapping results to the same source-agnostic
+`Track`/`AudioFeatures` shapes so `audio_features_to_vectors()` and the
+`CalibrationStore` loop are source-agnostic — the loop shouldn't need to
+know which platform a candidate came from beyond the `source` field.
+
+## Phase C — parallel practitioners on the shared store (design-level)
 
 Multiple subagents (or multiple Claude Code sessions) each run the Phase A
-loop against the same project (`epistemic-dj`), each getting its own
-`session_id` automatically. All findings/dead-ends/resolved-assumptions land
-in the same practice graph — exactly the practice/practitioner split already
-established in `architecture.md`'s "Dual calibration" section, applied to
-this new object type (tracks) instead of code.
+loop, each with a `practitioner_id`, all writing to the *same*
+`CalibrationStore` SQLite file. Compare individual calibration via
+`CalibrationStore.brier_score(practitioner_id=...)` — a first-class filter
+on the store itself now (unlike v1's plan to slice Empirica's
+`calibration-report` after the fact), because we own the schema.
 
-**Verified**: `calibration-report --ai-id <id>` scopes to the *practice*
-(project basename), not to an individual parallel instance within it — so
-out of the box this gives one pooled score across every practitioner writing
-to `epistemic-dj`, not automatic per-practitioner comparison.
-
-**Not yet verified — named as an open question, not assumed**:
-per-practitioner comparison is derivable by slicing on `session_id` (each
-parallel run gets a distinct one), but that slicing isn't a first-class
-report view today — would need a small script pulling resolved assumptions
-grouped by `session_id` rather than relying on `calibration-report` doing it
-automatically. Also unverified: whether concurrent writes from multiple
-parallel agents to the same SQLite-backed `sessions.db` are safe as-is
-(WAL mode? contention under real concurrency?) — check before running
-Phase C with more than one or two simultaneous practitioners, don't assume
-it's fine because it hasn't broken yet in this session's single-practitioner
-usage.
+**Open question, not yet verified**: whether plain `sqlite3` (as `TasteStore`
+already uses, no WAL mode configured) is safe under real concurrent writes
+from multiple parallel practitioners. `TasteStore`'s existing single-writer
+usage hasn't tested this. Before Phase C runs more than one or two
+simultaneous practitioners: either confirm SQLite's default locking is
+sufficient at this write volume, or turn on WAL mode
+(`PRAGMA journal_mode=WAL`) on `CalibrationStore.__init__` — cheap
+insurance, worth doing regardless once Phase C is real rather than assuming
+the default is fine because it hasn't broken yet in single-practitioner use.
 
 ## Build order
 
-**A** (this spec, single practitioner, Bandcamp only, ~8-10 tracks to prove
-the mechanism) → **B** (YouTube Music, after an explicit go on the ToS
-question) → **C** (parallel practitioners, after verifying SQLite
-concurrency safety and deciding whether per-session Brier slicing needs
-tooling or a one-off script is enough).
+**A** (standalone `CalibrationStore` + models, single practitioner, Bandcamp
+first since the pipeline already exists, ~8-10 tracks to prove the
+mechanism) → **B** (YouTube Music `discover()`+`measure()`, folded in once A
+proves the loop mechanics work — not gated on A being "done," just on the
+loop shape being validated) → **C** (parallel practitioners, after adding
+WAL mode and deciding on `practitioner_id` assignment for concurrent runs).
 
 ## Operational concerns for any loop, not phase-specific
 
@@ -196,11 +212,11 @@ tooling or a one-off script is enough).
   backoff on errors rather than firing an unbounded loop — an unannounced
   IP block would itself be worth a dead-end entry, but better to not cause
   one.
-- **Candidate source for a given loop run**: Phase A can keep reusing
-  arbitrary genre-adjacent search terms (as in the earlier discovery test),
-  but deriving terms from David's actual taste-profile `mcp_query_arrays`
-  would make the calibration signal directly relevant to real curation
-  rather than generic genre coverage. Not built yet — the taste-profile
-  data currently lives in conversation/git notes only, per the earlier
-  decision to defer full `TasteStore` integration until a working module
-  exists to justify it.
+- **Candidate source for a given loop run**: can keep reusing arbitrary
+  genre-adjacent search terms (as in the earlier discovery test), but
+  deriving terms from David's actual taste-profile `mcp_query_arrays` would
+  make the calibration signal directly relevant to real curation rather
+  than generic genre coverage. Not built yet — the taste-profile data
+  currently lives in conversation/git notes only, per the earlier decision
+  to defer full `TasteStore` integration until a working module exists to
+  justify it.

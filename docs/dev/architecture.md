@@ -135,15 +135,19 @@ for testing anyway:
 ## Track-prediction calibration loop
 
 Spec'd separately: `docs/dev/track-calibration-loop.md`. The idea: treat
-title/tag-based audio-feature prediction as a genuine forecast (an Empirica
-`assumption` with a stated confidence), resolve it against real
-`audio_analyze_track` measurement (`verified: true/false`), and let the
-resolved-assumption graph become the "which genre-tags are trustworthy"
-knowledge base — reusing Empirica's own artifact substrate again, this time
-for a new object type (tracks) instead of code. Phase A (single practitioner,
-Bandcamp) is specced for build; Phase B (YouTube Music as a second
-discover()+measure() source) and Phase C (parallel practitioners on the
-shared practice) are design-level with named open questions, not built.
+title/tag-based audio-feature prediction as a genuine forecast (a stated
+confidence), resolve it against real `audio_analyze_track` measurement
+(confirmed/refuted), and let the resolved-prediction graph become the
+"which genre-tags are trustworthy" knowledge base. **Standalone by design**
+(2026-07-19 product-positioning decision): this lives in epistemic-dj's own
+`CalibrationStore` (SQLite, mirrors `TasteStore`'s pattern), not routed
+through the Empirica CLI/package — the shipped product must not require
+Empirica at runtime, same principle already applied to `TasteStore`. My own
+dev-process PREFLIGHT/CHECK/POSTFLIGHT discipline while building this is
+unaffected; that's orthogonal to what ships. Phase A (Bandcamp + YouTube
+Music, single practitioner) is specced for build; Phase C (parallel
+practitioners on the shared store) is design-level with named open
+questions.
 
 ## Deferred (real direction, not current scope)
 

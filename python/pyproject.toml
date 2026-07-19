@@ -14,6 +14,12 @@ dependencies = [
     # this wraps cookie/identity_token auth, the pattern the whole
     # unofficial ecosystem has converged on. See docs/dev/architecture.md.
     "bandcamp-async-api>=0.2.2",
+    # Real audio-feature extraction (BPM, energy, spectral features) --
+    # replaces metadata/title-only reasoning, which David correctly
+    # identified as unreliable (findings f21/decision d26). Pure pip,
+    # no system binary needed (unlike aubio CLI, which the JS side uses
+    # but isn't installed here).
+    "librosa>=0.10",
 ]
 
 [project.scripts]

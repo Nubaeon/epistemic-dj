@@ -131,9 +131,9 @@ class CalibrationStore:
             ),
         )
         self._conn.commit()
-        return self._get_prediction(prediction_id)
+        return self.get_prediction(prediction_id)
 
-    def _get_prediction(self, prediction_id: str) -> TrackPrediction:
+    def get_prediction(self, prediction_id: str) -> TrackPrediction:
         row = self._conn.execute(
             "SELECT id, source, track_ref, track_name, term, predicted_kinetic_energy, "
             "predicted_vectors, confidence, practitioner_id, created_at, "

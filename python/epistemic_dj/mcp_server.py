@@ -17,7 +17,9 @@ from mcp.server.fastmcp import FastMCP
 from epistemic_dj.audio import analyze_track, audio_features_to_vectors
 from epistemic_dj.bandcamp.adapter import collection_item_to_track
 from epistemic_dj.bandcamp.client import MissingIdentityTokenError, get_client, managed_client
+from epistemic_dj.calibration import CalibrationStore
 from epistemic_dj.models import (
+    BrierResult,
     ConsumptionMode,
     CuratedTrack,
     Mixtape,
@@ -25,12 +27,17 @@ from epistemic_dj.models import (
     TastePatternType,
     TasteProfile,
     Track,
+    TrackPrediction,
 )
 from epistemic_dj.taste import TasteStore
+from epistemic_dj.youtube import measure_track as youtube_measure_track
+from epistemic_dj.youtube import search as youtube_search
+from epistemic_dj.youtube import search_result_to_track as youtube_search_result_to_track
 
 mcp = FastMCP("epistemic-dj")
 
 _taste_store = TasteStore()
+_calibration_store = CalibrationStore()
 
 # Session-scoped authenticated client. Bandcamp has no public OAuth for
 # personal collections (confirmed via bandcamp.com/developer -- the real
@@ -160,6 +167,95 @@ async def audio_analyze_track(artist_id: int, track_id: int, max_duration: float
     features = await analyze_track(url, max_duration=max_duration)
     vectors = audio_features_to_vectors(features)
     return {"features": features.model_dump(), "vectors": vectors.model_dump()}
+
+
+@mcp.tool()
+def youtube_search_tracks(query: str, limit: int = 10) -> list[Track]:
+    """Search YouTube Music for candidate tracks -- no auth required.
+
+    Discovery is platform-agnostic (the music is the same everywhere); this
+    is YouTube's discover() counterpart to bandcamp_search. Returns
+    source-agnostic Track objects with `id` set to the video id, which is
+    what calibration_predict/calibration_resolve need as track_ref.
+    """
+    results = youtube_search(query, limit=limit)
+    return [youtube_search_result_to_track(r) for r in results]
+
+
+@mcp.tool()
+def calibration_predict(
+    source: str,
+    track_ref: str,
+    track_name: str,
+    term: str,
+    predicted_kinetic_energy: float,
+    confidence: float,
+    practitioner_id: str = "default",
+) -> TrackPrediction:
+    """Log a title/tag-based prediction for a candidate track BEFORE measuring it.
+
+    source must be 'bandcamp' or 'youtube'. track_ref: for bandcamp,
+    'artist_id:track_id' (matching audio_analyze_track's args); for
+    youtube, the video id (matching youtube_search_tracks' Track.id).
+    predicted_kinetic_energy and confidence must be a genuine judgment call
+    from track_name/term/tags alone -- read them, form a real belief, don't
+    default to a fixed value. Call calibration_resolve next to measure the
+    real audio and see whether the prediction holds up.
+    """
+    return _calibration_store.log_prediction(
+        source=source, track_ref=track_ref, track_name=track_name, term=term,
+        predicted_kinetic_energy=predicted_kinetic_energy, confidence=confidence,
+        practitioner_id=practitioner_id,
+    )
+
+
+@mcp.tool()
+async def calibration_resolve(prediction_id: str, max_duration: float = 45.0) -> TrackPrediction:
+    """Measures the real audio for a previously-logged prediction and resolves it.
+
+    Confirmed/refuted against kinetic_energy only (tolerance 0.2) -- see
+    docs/dev/track-calibration-loop.md for why. Dispatches to Bandcamp or
+    YouTube's measure() path based on the prediction's stored `source`.
+    """
+    prediction = _calibration_store.get_prediction(prediction_id)
+    if prediction.source == "bandcamp":
+        artist_id_str, track_id_str = prediction.track_ref.split(":")
+        result = await audio_analyze_track(
+            artist_id=int(artist_id_str), track_id=int(track_id_str), max_duration=max_duration
+        )
+        vectors = MusicVectors.model_validate(result["vectors"])
+    elif prediction.source == "youtube":
+        features = await youtube_measure_track(prediction.track_ref, max_duration=max_duration)
+        vectors = audio_features_to_vectors(features)
+    else:
+        raise ValueError(f"Unknown source '{prediction.source}' -- must be bandcamp or youtube.")
+    return _calibration_store.resolve_prediction(prediction_id, vectors)
+
+
+@mcp.tool()
+def calibration_brier(
+    term_prefix: str | None = None, practitioner_id: str | None = None
+) -> BrierResult:
+    """epistemic-dj's own Brier score (predicted confidence vs. verified outcome)
+    over resolved calibration predictions -- NOT empirica's calibration-report,
+    which scores general self-assessment, a different signal. See
+    docs/dev/track-calibration-loop.md. Filter by genre-term prefix and/or
+    practitioner_id (for comparing multiple parallel practitioners later).
+    """
+    return _calibration_store.brier_score(term_prefix=term_prefix, practitioner_id=practitioner_id)
+
+
+@mcp.tool()
+def calibration_list_predictions(
+    source: str | None = None,
+    term: str | None = None,
+    practitioner_id: str | None = None,
+    resolved_only: bool = False,
+) -> list[TrackPrediction]:
+    """Lists logged track predictions, optionally filtered."""
+    return _calibration_store.get_predictions(
+        source=source, term=term, practitioner_id=practitioner_id, resolved_only=resolved_only
+    )
 
 
 @mcp.tool()

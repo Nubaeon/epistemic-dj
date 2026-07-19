@@ -5,6 +5,7 @@ from bandcamp_async_api.models import CollectionItem, CollectionSummary, SearchR
 
 import epistemic_dj.mcp_server as server
 from epistemic_dj.bandcamp.client import MissingIdentityTokenError
+from epistemic_dj.calibration import CalibrationStore
 
 
 @pytest.fixture(autouse=True)
@@ -12,6 +13,14 @@ def reset_credentials():
     server._client_identity_token = None
     yield
     server._client_identity_token = None
+
+
+@pytest.fixture(autouse=True)
+def isolated_calibration_store(tmp_path, monkeypatch):
+    store = CalibrationStore(db_path=tmp_path / "test_calibration.db")
+    monkeypatch.setattr(server, "_calibration_store", store)
+    yield store
+    store.close()
 
 
 def test_bandcamp_set_credentials_stores_token():
@@ -132,3 +141,92 @@ async def test_audio_analyze_track_raises_when_not_streamable(monkeypatch):
 
     with pytest.raises(ValueError, match="no streaming_url"):
         await server.audio_analyze_track(artist_id=1, track_id=2)
+
+
+def test_youtube_search_tracks_maps_to_source_agnostic_track(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "youtube_search",
+        lambda query, limit: [
+            {"video_id": "abc", "title": "T", "artists": ["A"], "duration_seconds": 100}
+        ],
+    )
+
+    tracks = server.youtube_search_tracks("power breaks")
+
+    assert len(tracks) == 1
+    assert tracks[0].source == "youtube"
+    assert tracks[0].id == "abc"
+
+
+def test_calibration_predict_logs_and_returns_prediction():
+    prediction = server.calibration_predict(
+        source="bandcamp", track_ref="1:2", track_name="Power Breaks",
+        term="power breaks", predicted_kinetic_energy=0.7, confidence=0.6,
+    )
+
+    assert prediction.source == "bandcamp"
+    assert prediction.verified is None
+
+    listed = server.calibration_list_predictions(term="power breaks")
+    assert len(listed) == 1
+
+
+async def test_calibration_resolve_dispatches_bandcamp_measurement(monkeypatch):
+    prediction = server.calibration_predict(
+        source="bandcamp", track_ref="1:2", track_name="X", term="t",
+        predicted_kinetic_energy=0.7, confidence=0.6,
+    )
+
+    from epistemic_dj.models import MusicVectors
+
+    async def fake_audio_analyze_track(artist_id, track_id, max_duration=60.0):
+        assert artist_id == 1
+        assert track_id == 2
+        vectors = MusicVectors(kinetic_energy=0.72, cognitive_load=0.5)
+        return {"features": {}, "vectors": vectors.model_dump()}
+
+    monkeypatch.setattr(server, "audio_analyze_track", fake_audio_analyze_track)
+
+    resolved = await server.calibration_resolve(prediction.id, max_duration=30.0)
+
+    assert resolved.verified is True
+    assert resolved.delta == pytest.approx(0.02)
+
+
+async def test_calibration_resolve_dispatches_youtube_measurement(monkeypatch):
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="videoid123", track_name="X", term="t",
+        predicted_kinetic_energy=0.9, confidence=0.5,
+    )
+
+    from epistemic_dj.audio.analysis import AudioFeatures
+
+    async def fake_measure_track(video_id, *, max_duration=60.0):
+        assert video_id == "videoid123"
+        return AudioFeatures(
+            tempo_bpm=70.0, rms_energy=0.05, spectral_centroid_hz=900.0,
+            onset_density_per_sec=0.5, duration_analyzed_sec=max_duration,
+            beat_interval_cv=0.02, spectral_bandwidth_hz=1200.0,
+        )
+
+    monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
+
+    resolved = await server.calibration_resolve(prediction.id, max_duration=30.0)
+
+    assert resolved.verified is False  # 0.9 predicted vs. a slow/low-energy measurement
+
+
+async def test_calibration_resolve_rejects_unknown_source():
+    prediction = server.calibration_predict(
+        source="soundcloud", track_ref="x", track_name="X", term="t",
+        predicted_kinetic_energy=0.5, confidence=0.5,
+    )
+    with pytest.raises(ValueError, match="Unknown source"):
+        await server.calibration_resolve(prediction.id)
+
+
+def test_calibration_brier_empty_returns_none():
+    result = server.calibration_brier()
+    assert result.brier_score is None
+    assert result.n == 0

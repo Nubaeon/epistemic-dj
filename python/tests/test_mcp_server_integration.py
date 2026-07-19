@@ -54,6 +54,11 @@ async def test_all_expected_tools_are_registered():
         "taste_export_profile",
         "taste_save_mixtape",
         "audio_analyze_track",
+        "youtube_search_tracks",
+        "calibration_predict",
+        "calibration_resolve",
+        "calibration_brier",
+        "calibration_list_predictions",
     }
 
 

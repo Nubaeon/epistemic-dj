@@ -48,6 +48,7 @@ def test_resolve_stream_maps_ytdlp_info(monkeypatch):
                 "ext": "webm",
                 "http_headers": {"User-Agent": "test"},
                 "abr": 128.0,
+                "duration": 200.0,
             }
 
     monkeypatch.setattr("epistemic_dj.youtube.client.yt_dlp.YoutubeDL", FakeYDL)
@@ -58,6 +59,7 @@ def test_resolve_stream_maps_ytdlp_info(monkeypatch):
     assert resolved["ext"] == "webm"
     assert resolved["headers"] == {"User-Agent": "test"}
     assert resolved["abr_kbps"] == 128.0
+    assert resolved["duration_sec"] == 200.0
 
 
 def test_bytes_for_duration_scales_with_bitrate():

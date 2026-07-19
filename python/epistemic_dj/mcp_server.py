@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from bandcamp_async_api.models import CollectionItem, SearchResultItem
 from mcp.server.fastmcp import FastMCP
 
-from epistemic_dj.audio import analyze_track, audio_features_to_vectors
+from epistemic_dj.audio import audio_features_to_vectors, sample_track
 from epistemic_dj.bandcamp.adapter import collection_item_to_track
 from epistemic_dj.bandcamp.client import (
     MissingIdentityTokenError,
@@ -154,23 +154,32 @@ async def audio_analyze_track(artist_id: int, track_id: int, max_duration: float
     artist_id/track_id come from a track (or album) search result's
     `artist_id`/`id` fields (bandcamp_search / bandcamp_search_candidates) --
     NOT from title/tag text. Fetches the track's real streaming_url via
-    get_track() (no auth required for public tracks), downloads the first
-    `max_duration` seconds, and extracts real signal via librosa. Replaces
-    metadata/title-only reasoning for curation, which is unreliable (Bandcamp
-    titles/tags are often wrong about actual sound -- see empirica decision
-    d26). MusicVectors fields with no honest audio-derivation path (valence,
-    vocal_density, structural_repetition, ...) are null, not guessed.
+    get_track() (no auth required for public tracks) and samples
+    beginning/middle/end windows via sample_track() rather than a single
+    from-the-start excerpt -- confirmed live that a single window gives an
+    unreliable reading on tracks with a slow/quiet intro (empirica finding
+    e7214d5e: 99 vs 152 BPM on the same track depending on window).
+    max_duration, when set, caps the per-window analysis length passed
+    through as sample_track's `window` -- kept as the same param name for
+    API stability even though its role changed from "total excerpt length"
+    to "per-window length". MusicVectors fields with no honest audio-
+    derivation path (valence, vocal_density, structural_repetition, ...)
+    are null, not guessed.
     """
     async with managed_client() as client:
         track = await client.get_track(artist_id, track_id)
     if not track.streaming_url:
         raise ValueError(f"Track {artist_id}/{track_id} has no streaming_url (not streamable).")
+    if not track.duration:
+        raise ValueError(f"Track {artist_id}/{track_id} has no known duration.")
     # streaming_url is a dict of format -> URL (e.g. {"mp3-128": "..."}) --
     # confirmed live (empirica finding f21). mp3-128 is the format every
     # public Bandcamp track exposes; higher-bitrate/lossless formats require
     # purchase and aren't in this dict.
     url = track.streaming_url.get("mp3-128") or next(iter(track.streaming_url.values()))
-    features = await analyze_track(url, max_duration=max_duration)
+    features = await sample_track(
+        url, track_duration_sec=track.duration, window=min(max_duration, 15.0)
+    )
     vectors = audio_features_to_vectors(features)
     return {"features": features.model_dump(), "vectors": vectors.model_dump()}
 

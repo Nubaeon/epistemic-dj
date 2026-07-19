@@ -4,13 +4,9 @@ the discover() + measure() split together for real audio analysis.
 
 from __future__ import annotations
 
-from epistemic_dj.audio.analysis import AudioFeatures, analyze_track
+from epistemic_dj.audio.analysis import AudioFeatures, sample_track
 from epistemic_dj.models import Track
-from epistemic_dj.youtube.client import (
-    YouTubeSearchResult,
-    bytes_for_duration,
-    resolve_stream,
-)
+from epistemic_dj.youtube.client import DEFAULT_BITRATE_KBPS, YouTubeSearchResult, resolve_stream
 
 
 def search_result_to_track(result: YouTubeSearchResult) -> Track:
@@ -25,19 +21,22 @@ def search_result_to_track(result: YouTubeSearchResult) -> Track:
 
 
 async def measure_track(video_id: str, *, max_duration: float = 60.0) -> AudioFeatures:
-    """Resolves a video id to a stream and analyzes the real audio.
-
-    Uses a Range-limited download sized to max_duration -- confirmed live
-    that unranged downloads from googlevideo.com are paced to roughly
-    real-time playback speed (empirica finding c2e9671b), unlike Bandcamp's
-    stream, which needs no such handling.
+    """Resolves a video id to a stream and samples beginning/middle/end
+    windows via sample_track() -- not a single from-the-start excerpt,
+    confirmed unreliable on tracks with a slow/quiet intro (empirica
+    finding e7214d5e). Range-limited per-window download, sized off the
+    resolved stream's real duration/bitrate -- confirmed live that unranged
+    downloads from googlevideo.com are paced to roughly real-time playback
+    speed (empirica finding c2e9671b), unlike Bandcamp's stream.
     """
     stream = resolve_stream(video_id)
-    range_bytes = bytes_for_duration(max_duration, stream["abr_kbps"])
-    return await analyze_track(
+    if not stream["duration_sec"]:
+        raise ValueError(f"YouTube video {video_id} has no known duration.")
+    return await sample_track(
         stream["url"],
-        max_duration=max_duration,
+        track_duration_sec=stream["duration_sec"],
+        bitrate_kbps=stream["abr_kbps"] or DEFAULT_BITRATE_KBPS,
+        window=min(max_duration, 15.0),
         suffix=f".{stream['ext']}",
         headers=stream["headers"],
-        range_bytes=range_bytes,
     )

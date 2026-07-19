@@ -89,6 +89,7 @@ async def test_bandcamp_search_works_without_credentials(monkeypatch):
 async def test_audio_analyze_track_fetches_streaming_url_and_maps_vectors(monkeypatch):
     class FakeTrack:
         streaming_url = {"mp3-128": "https://example.com/stream.mp3"}
+        duration = 200.0
 
     class FakeClient:
         async def get_track(self, artist_id, track_id):
@@ -104,19 +105,20 @@ async def test_audio_analyze_track_fetches_streaming_url_and_maps_vectors(monkey
 
     from epistemic_dj.audio.analysis import AudioFeatures
 
-    async def fake_analyze_track(streaming_url, *, max_duration=60.0):
+    async def fake_sample_track(streaming_url, *, track_duration_sec, window=15.0, **kwargs):
         assert streaming_url == "https://example.com/stream.mp3"
+        assert track_duration_sec == 200.0
         return AudioFeatures(
             tempo_bpm=140.0,
             rms_energy=0.15,
             spectral_centroid_hz=2500.0,
             onset_density_per_sec=5.0,
-            duration_analyzed_sec=max_duration,
+            duration_analyzed_sec=window,
             beat_interval_cv=0.05,
             spectral_bandwidth_hz=2200.0,
         )
 
-    monkeypatch.setattr(server, "analyze_track", fake_analyze_track)
+    monkeypatch.setattr(server, "sample_track", fake_sample_track)
 
     result = await server.audio_analyze_track(artist_id=123, track_id=456)
 
@@ -128,6 +130,7 @@ async def test_audio_analyze_track_fetches_streaming_url_and_maps_vectors(monkey
 async def test_audio_analyze_track_raises_when_not_streamable(monkeypatch):
     class FakeTrack:
         streaming_url = None
+        duration = 200.0
 
     class FakeClient:
         async def get_track(self, artist_id, track_id):
@@ -140,6 +143,25 @@ async def test_audio_analyze_track_raises_when_not_streamable(monkeypatch):
     monkeypatch.setattr(server, "managed_client", fake_managed_client)
 
     with pytest.raises(ValueError, match="no streaming_url"):
+        await server.audio_analyze_track(artist_id=1, track_id=2)
+
+
+async def test_audio_analyze_track_raises_when_duration_unknown(monkeypatch):
+    class FakeTrack:
+        streaming_url = {"mp3-128": "https://example.com/stream.mp3"}
+        duration = None
+
+    class FakeClient:
+        async def get_track(self, artist_id, track_id):
+            return FakeTrack()
+
+    @asynccontextmanager
+    async def fake_managed_client(identity_token=None):
+        yield FakeClient()
+
+    monkeypatch.setattr(server, "managed_client", fake_managed_client)
+
+    with pytest.raises(ValueError, match="no known duration"):
         await server.audio_analyze_track(artist_id=1, track_id=2)
 
 

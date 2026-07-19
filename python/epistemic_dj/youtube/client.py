@@ -52,6 +52,7 @@ class ResolvedStream(TypedDict):
     ext: str
     headers: dict[str, str]
     abr_kbps: float | None
+    duration_sec: float | None
 
 
 def resolve_stream(video_id: str) -> ResolvedStream:
@@ -78,6 +79,7 @@ def resolve_stream(video_id: str) -> ResolvedStream:
         "ext": info.get("ext", "webm"),
         "headers": info.get("http_headers", {}),
         "abr_kbps": info.get("abr"),
+        "duration_sec": info.get("duration"),
     }
 
 

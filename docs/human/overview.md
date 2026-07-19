@@ -45,5 +45,6 @@ already do real-time stem separation better than we ever will) or with
 professional production tools. The product is taste curation and
 portability, not another mixer or another DAW.
 
-See [`docs/dev/architecture.md`](../dev/architecture.md) for the technical
-design, or `AUTONOMY_BRIEFING.md` for the original MVP scope.
+See [`docs/human/setup.md`](setup.md) to connect your own Bandcamp
+collection, [`docs/dev/architecture.md`](../dev/architecture.md) for the
+technical design, or `AUTONOMY_BRIEFING.md` for the original MVP scope.

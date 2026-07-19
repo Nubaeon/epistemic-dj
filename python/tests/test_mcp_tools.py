@@ -103,12 +103,12 @@ async def test_audio_analyze_track_fetches_streaming_url_and_maps_vectors(monkey
 
     monkeypatch.setattr(server, "managed_client", fake_managed_client)
 
-    from epistemic_dj.audio.analysis import AudioFeatures
+    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
 
     async def fake_sample_track(streaming_url, *, track_duration_sec, window=15.0, **kwargs):
         assert streaming_url == "https://example.com/stream.mp3"
         assert track_duration_sec == 200.0
-        return AudioFeatures(
+        features = AudioFeatures(
             tempo_bpm=140.0,
             rms_energy=0.15,
             spectral_centroid_hz=2500.0,
@@ -117,12 +117,13 @@ async def test_audio_analyze_track_fetches_streaming_url_and_maps_vectors(monkey
             beat_interval_cv=0.05,
             spectral_bandwidth_hz=2200.0,
         )
+        return SampledAudioFeatures(aggregated=features, samples=[features])
 
     monkeypatch.setattr(server, "sample_track", fake_sample_track)
 
     result = await server.audio_analyze_track(artist_id=123, track_id=456)
 
-    assert result["features"]["tempo_bpm"] == 140.0
+    assert result["features"]["aggregated"]["tempo_bpm"] == 140.0
     assert result["vectors"]["kinetic_energy"] is not None
     assert result["vectors"]["valence"] is None
 
@@ -200,12 +201,14 @@ async def test_calibration_resolve_dispatches_bandcamp_measurement(monkeypatch):
         predicted_kinetic_energy=0.7, confidence=0.6,
     )
 
-    from epistemic_dj.models import MusicVectors
+    from epistemic_dj.models import EstimatedValue, MusicVectors
 
     async def fake_audio_analyze_track(artist_id, track_id, max_duration=60.0):
         assert artist_id == 1
         assert track_id == 2
-        vectors = MusicVectors(kinetic_energy=0.72, cognitive_load=0.5)
+        vectors = MusicVectors(
+            kinetic_energy=EstimatedValue(value=0.72), cognitive_load=EstimatedValue(value=0.5)
+        )
         return {"features": {}, "vectors": vectors.model_dump()}
 
     monkeypatch.setattr(server, "audio_analyze_track", fake_audio_analyze_track)
@@ -222,15 +225,16 @@ async def test_calibration_resolve_dispatches_youtube_measurement(monkeypatch):
         predicted_kinetic_energy=0.9, confidence=0.5,
     )
 
-    from epistemic_dj.audio.analysis import AudioFeatures
+    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
 
     async def fake_measure_track(video_id, *, max_duration=60.0):
         assert video_id == "videoid123"
-        return AudioFeatures(
+        features = AudioFeatures(
             tempo_bpm=70.0, rms_energy=0.05, spectral_centroid_hz=900.0,
             onset_density_per_sec=0.5, duration_analyzed_sec=max_duration,
             beat_interval_cv=0.02, spectral_bandwidth_hz=1200.0,
         )
+        return SampledAudioFeatures(aggregated=features, samples=[features])
 
     monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
 

@@ -4,7 +4,7 @@ the discover() + measure() split together for real audio analysis.
 
 from __future__ import annotations
 
-from epistemic_dj.audio.analysis import AudioFeatures, sample_track
+from epistemic_dj.audio.analysis import SampledAudioFeatures, sample_track
 from epistemic_dj.models import Track
 from epistemic_dj.youtube.client import DEFAULT_BITRATE_KBPS, YouTubeSearchResult, resolve_stream
 
@@ -20,7 +20,7 @@ def search_result_to_track(result: YouTubeSearchResult) -> Track:
     )
 
 
-async def measure_track(video_id: str, *, max_duration: float = 60.0) -> AudioFeatures:
+async def measure_track(video_id: str, *, max_duration: float = 60.0) -> SampledAudioFeatures:
     """Resolves a video id to a stream and samples beginning/middle/end
     windows via sample_track() -- not a single from-the-start excerpt,
     confirmed unreliable on tracks with a slow/quiet intro (empirica

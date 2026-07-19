@@ -119,10 +119,8 @@ class CalibrationStore:
         ).fetchone()
         if row is None:
             raise PredictionNotFoundError(prediction_id)
-        if measured_vectors.kinetic_energy is None:
-            raise ValueError("measured_vectors.kinetic_energy is None -- cannot resolve.")
 
-        delta = abs(row[0] - measured_vectors.kinetic_energy)
+        delta = abs(row[0] - measured_vectors.kinetic_energy.value)
         verified = delta <= tolerance
         resolved_at = datetime.now(UTC)
         self._conn.execute(

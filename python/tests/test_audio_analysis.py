@@ -206,7 +206,7 @@ async def test_sample_track_downloads_once_and_analyzes_multiple_offsets(
     # prevent the fixture file itself from being deleted by sample_track's cleanup
     monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: None)
 
-    features = await sample_track(
+    sampled = await sample_track(
         "https://example.com/track.mp3", track_duration_sec=90.0, min_offset=60.0, window=15.0,
     )
 
@@ -214,7 +214,8 @@ async def test_sample_track_downloads_once_and_analyzes_multiple_offsets(
     assert captured_range["range_bytes"] > 0
     # aggregated across offsets that include the silent intro and the real
     # click content -- should land strictly between "all silence" and "all clicks"
-    assert features.onset_density_per_sec > 0.0
+    assert sampled.aggregated.onset_density_per_sec > 0.0
+    assert len(sampled.samples) >= 1
 
 
 async def test_analyze_track_downloads_and_analyzes(monkeypatch, click_track_file):

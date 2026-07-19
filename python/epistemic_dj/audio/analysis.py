@@ -36,6 +36,19 @@ class AudioFeatures(BaseModel):
     )
 
 
+class SampledAudioFeatures(BaseModel):
+    """sample_track()'s full result -- the mean-aggregated features AND the
+    individual per-window samples, so downstream mapping (audio_features_to_
+    vectors) can compute genuine within-track uncertainty from their spread
+    instead of throwing it away (David's correction, 2026-07-19: a single
+    averaged scalar is fabricated precision when the underlying windows
+    genuinely disagree).
+    """
+
+    aggregated: AudioFeatures
+    samples: list[AudioFeatures]
+
+
 async def download_stream(
     url: str,
     *,
@@ -163,10 +176,13 @@ async def sample_track(
     window: float = DEFAULT_SAMPLE_WINDOW_SEC,
     suffix: str = ".mp3",
     headers: dict[str, str] | None = None,
-) -> AudioFeatures:
-    """Samples beginning/middle/end windows of a track and aggregates
-    (mean) them into one AudioFeatures, instead of trusting a single
-    from-the-start excerpt (see module docstring for why that's unreliable).
+) -> SampledAudioFeatures:
+    """Samples beginning/middle/end windows of a track, instead of trusting
+    a single from-the-start excerpt (see module docstring for why that's
+    unreliable). Returns both the mean-aggregated features AND the raw
+    per-window samples -- callers that need genuine uncertainty (not just a
+    point estimate) use the spread across samples; callers that just want
+    the number use .aggregated.
 
     Downloads ONE Range request covering bytes 0..(furthest sample point) --
     not per-sample downloads -- then runs librosa.load(offset=...) against
@@ -184,4 +200,4 @@ async def sample_track(
         samples = [analyze_file(path, offset=o, max_duration=window) for o in offsets]
     finally:
         path.unlink(missing_ok=True)
-    return _aggregate_features(samples)
+    return SampledAudioFeatures(aggregated=_aggregate_features(samples), samples=samples)

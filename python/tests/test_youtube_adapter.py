@@ -46,18 +46,19 @@ async def test_measure_track_samples_multiple_offsets_with_ranged_download(monke
             url=url, track_duration_sec=track_duration_sec, bitrate_kbps=bitrate_kbps,
             window=window, suffix=suffix, headers=headers,
         )
-        from epistemic_dj.audio.analysis import AudioFeatures
-        return AudioFeatures(
+        from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
+        af = AudioFeatures(
             tempo_bpm=120.0, rms_energy=0.1, spectral_centroid_hz=2000.0,
             onset_density_per_sec=4.0, duration_analyzed_sec=window,
             beat_interval_cv=0.02, spectral_bandwidth_hz=2000.0,
         )
+        return SampledAudioFeatures(aggregated=af, samples=[af])
 
     monkeypatch.setattr("epistemic_dj.youtube.adapter.sample_track", fake_sample_track)
 
-    features = await measure_track("abc123", max_duration=30.0)
+    sampled = await measure_track("abc123", max_duration=30.0)
 
-    assert features.tempo_bpm == 120.0
+    assert sampled.aggregated.tempo_bpm == 120.0
     assert captured["url"] == "https://googlevideo.com/x"
     assert captured["track_duration_sec"] == 200.0
     assert captured["bitrate_kbps"] == 128.0

@@ -24,6 +24,27 @@ from pydantic import BaseModel, Field
 Scalar = float  # convention: 0.0-1.0, matching Empirica's existing vector range
 
 
+class EstimatedValue(BaseModel):
+    """A measured quantity that carries its own genuine uncertainty --
+    not a bare scalar (David's correction, 2026-07-19: measurement should
+    be a holistic, uncertainty-quantified assessment, not a heuristic point
+    estimate; mirrors Empirica's own vectors never standing alone without
+    an uncertainty companion).
+
+    uncertainty combines up to two independent sources, root-sum-squared
+    where both are available (standard error propagation for independent
+    sources): (1) within-track sample variance -- how much sample_track()'s
+    beginning/middle/end windows disagree, real per-track signal, not
+    fabricated; (2) model/grounding uncertainty -- for kinetic_energy, the
+    DEAM regression's residual RMSE (a fixed, dataset-level constant, not
+    per-track). None when no uncertainty signal exists at all (e.g. only
+    one sample was taken).
+    """
+
+    value: Scalar
+    uncertainty: Scalar | None = None
+
+
 class ConsumptionMode(StrEnum):
     """Which situational-tier vectors matter, and how they're weighted.
 
@@ -44,14 +65,17 @@ class MusicVectors(BaseModel):
     Foundation tier -- always computed, drives core matching.
     """
 
-    kinetic_energy: Scalar = Field(
-        description="Perceived drive/propulsion (tempo + rhythmic density + percussive "
-        "emphasis combined, not raw BPM). Derivable from tempo/onset-density/RMS energy."
+    kinetic_energy: EstimatedValue = Field(
+        description="Perceived drive/propulsion. Value comes from a linear regression fit "
+        "against DEAM's human-rated arousal annotations (not a hand-picked formula -- see "
+        "audio/mapping.py and empirica finding 4b25a828 for the fit's honest R2~0.43-0.50). "
+        "uncertainty combines within-track sample variance with the regression's residual RMSE."
     )
-    cognitive_load: Scalar = Field(
+    cognitive_load: EstimatedValue = Field(
         description="How much foreground attention the track demands. Distinct from "
         "structural_repetition -- a repetitive but harsh/loud track can still be high-load. "
-        "Derivable from onset-density/spectral-bandwidth."
+        "Still heuristic-derived (no external ground truth for this construct yet) -- "
+        "uncertainty reflects within-track sample variance only, no model/grounding term."
     )
     valence: Scalar | None = Field(
         default=None,
@@ -87,12 +111,13 @@ class MusicVectors(BaseModel):
     )
 
     # Situational tier -- weighted by ConsumptionMode.DJ / CREATIVE_SEED
-    groove_consistency: Scalar | None = Field(
-        default=None, description="Rhythmic-pocket steadiness. Matters for DJ/beatmatching."
+    groove_consistency: EstimatedValue | None = Field(
+        default=None, description="Rhythmic-pocket steadiness. Matters for DJ/beatmatching. "
+        "Heuristic-derived; uncertainty is within-track sample variance only."
     )
-    textural_density: Scalar | None = Field(
+    textural_density: EstimatedValue | None = Field(
         default=None, description="How many simultaneous sonic layers. Matters most for "
-        "creative-seed mode."
+        "creative-seed mode. Heuristic-derived; uncertainty is within-track sample variance only."
     )
     harmonic_tension: Scalar | None = Field(
         default=None, description="Dissonance vs. resolution. Mostly a creative-seed concern."

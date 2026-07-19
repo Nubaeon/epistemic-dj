@@ -1,7 +1,14 @@
 import pytest
 
 from epistemic_dj.calibration.store import CalibrationStore, PredictionNotFoundError
-from epistemic_dj.models import MusicVectors
+from epistemic_dj.models import EstimatedValue, MusicVectors
+
+
+def _vectors(kinetic_energy: float, cognitive_load: float = 0.5) -> MusicVectors:
+    return MusicVectors(
+        kinetic_energy=EstimatedValue(value=kinetic_energy),
+        cognitive_load=EstimatedValue(value=cognitive_load),
+    )
 
 
 @pytest.fixture
@@ -34,7 +41,7 @@ def test_resolve_prediction_within_tolerance_is_verified(store):
         source="bandcamp", track_ref="1:1", track_name="X", term="t",
         predicted_kinetic_energy=0.6, confidence=0.7,
     )
-    measured = MusicVectors(kinetic_energy=0.65, cognitive_load=0.5)
+    measured = _vectors(0.65, 0.5)
 
     resolved = store.resolve_prediction(prediction.id, measured, tolerance=0.2)
 
@@ -48,7 +55,7 @@ def test_resolve_prediction_outside_tolerance_is_refuted(store):
         source="bandcamp", track_ref="1:1", track_name="Relaxing Power Breaks", term="power breaks",
         predicted_kinetic_energy=0.7, confidence=0.6,
     )
-    measured = MusicVectors(kinetic_energy=0.09, cognitive_load=0.12)
+    measured = _vectors(0.09, 0.12)
 
     resolved = store.resolve_prediction(prediction.id, measured, tolerance=0.2)
 
@@ -57,7 +64,7 @@ def test_resolve_prediction_outside_tolerance_is_refuted(store):
 
 
 def test_resolve_unknown_prediction_raises(store):
-    measured = MusicVectors(kinetic_energy=0.5, cognitive_load=0.5)
+    measured = _vectors(0.5, 0.5)
     with pytest.raises(PredictionNotFoundError):
         store.resolve_prediction("does-not-exist", measured)
 
@@ -75,7 +82,7 @@ def test_brier_score_perfect_calibration_is_zero(store):
             source="bandcamp", track_ref=f"{i}:{i}", track_name=f"T{i}", term="t",
             predicted_kinetic_energy=0.5, confidence=1.0,
         )
-        store.resolve_prediction(p.id, MusicVectors(kinetic_energy=0.5, cognitive_load=0.5))
+        store.resolve_prediction(p.id, _vectors(0.5, 0.5))
 
     result = store.brier_score()
     assert result.n == 3
@@ -87,14 +94,14 @@ def test_brier_score_filters_by_term_prefix_and_practitioner(store):
         source="bandcamp", track_ref="1:1", track_name="A", term="genre:breaks",
         predicted_kinetic_energy=0.5, confidence=0.9, practitioner_id="claude-1",
     )
-    store.resolve_prediction(p1.id, MusicVectors(kinetic_energy=0.5, cognitive_load=0.5))
+    store.resolve_prediction(p1.id, _vectors(0.5, 0.5))
 
     p2 = store.log_prediction(
         source="bandcamp", track_ref="2:2", track_name="B", term="genre:trance",
         predicted_kinetic_energy=0.5, confidence=0.1, practitioner_id="claude-2",
     )
     # refuted -- big miss
-    store.resolve_prediction(p2.id, MusicVectors(kinetic_energy=0.99, cognitive_load=0.5))
+    store.resolve_prediction(p2.id, _vectors(0.99, 0.5))
 
     breaks_only = store.brier_score(term_prefix="genre:breaks")
     assert breaks_only.n == 1

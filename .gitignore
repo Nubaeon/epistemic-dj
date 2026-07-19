@@ -11,3 +11,4 @@ python/**/__pycache__/
 python/**/*.pyc
 python/.pytest_cache/
 python/.ruff_cache/
+python/epistemic_dj/taste/taste.db

@@ -179,3 +179,61 @@ class Mixtape(BaseModel):
     creator_practice_id: str = Field(description="The epistemic-dj user practice that made this.")
     mode: ConsumptionMode
     tracks: list[CuratedTrack]
+
+
+class TastePatternType(StrEnum):
+    PATTERN = "pattern"
+    ANTI_PATTERN = "anti_pattern"
+
+
+class TasteFinding(BaseModel):
+    """A single piece of raw taste signal from an interview or listening session.
+
+    Sprint 2 MVP: interview-sourced (a user statement during onboarding).
+    Later: behavioral signal (skip/replay/collect) per the original
+    architecture design -- not built yet, see docs/dev/architecture.md.
+    """
+
+    id: str
+    user_id: str
+    content: str
+    impact: Scalar = 0.5
+    created_at: datetime
+
+
+class TastePattern(BaseModel):
+    """A distilled, cross-finding taste pattern or anti-pattern.
+
+    confidence decays toward a floor when explicitly contradicted (see
+    TasteStore.decay_pattern) -- mirrors Empirica's lesson-decay mechanism
+    conceptually. Sprint 2 MVP: decay is triggered explicitly by the
+    interviewing Claude's judgment, not automatic semantic-similarity
+    matching (that requires infrastructure -- embeddings/Qdrant -- out of
+    scope here; see the standalone-store decision in the artifact graph).
+    """
+
+    id: str
+    user_id: str
+    pattern_type: TastePatternType
+    content: str
+    confidence: Scalar
+    vectors: MusicVectors | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TasteProfile(BaseModel):
+    """Exported view of a user's taste: raw findings + distilled patterns.
+
+    `vectors` is heuristic-only for Sprint 2 MVP -- computed from interview
+    signal volume (how much was said, how confident the patterns are), NOT
+    real behavioral telemetry (skip/replay/collect), which doesn't exist
+    yet. None when there isn't enough signal to compute anything meaningful
+    (fewer than MIN_SIGNAL_FOR_VECTORS findings+patterns) -- explicitly
+    avoiding fabricated precision.
+    """
+
+    user_id: str
+    findings: list[TasteFinding]
+    patterns: list[TastePattern]
+    vectors: UserTasteVectors | None = None

@@ -132,6 +132,19 @@ for testing anyway:
   cost, no legal ambiguity, useful for volume if the taste-model needs a
   broader test corpus than what's on Bandcamp's free tier.
 
+## Track-prediction calibration loop
+
+Spec'd separately: `docs/dev/track-calibration-loop.md`. The idea: treat
+title/tag-based audio-feature prediction as a genuine forecast (an Empirica
+`assumption` with a stated confidence), resolve it against real
+`audio_analyze_track` measurement (`verified: true/false`), and let the
+resolved-assumption graph become the "which genre-tags are trustworthy"
+knowledge base — reusing Empirica's own artifact substrate again, this time
+for a new object type (tracks) instead of code. Phase A (single practitioner,
+Bandcamp) is specced for build; Phase B (YouTube Music as a second
+discover()+measure() source) and Phase C (parallel practitioners on the
+shared practice) are design-level with named open questions, not built.
+
 ## Deferred (real direction, not current scope)
 
 AI-driven control of prosumer MIDI hardware (controllers, mixers,

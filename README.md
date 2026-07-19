@@ -145,6 +145,15 @@ Generate a pattern for my current epistemic state:
 - [ ] Cross-practice composition (mix epistemic state with taste profiles)
 - [ ] Empirica artifact integration (log music as a form of thought)
 
+## Project structure
+
+Two languages, on purpose — see [`docs/dev/architecture.md`](docs/dev/architecture.md) for why:
+
+- `src/` — existing JS/ESM MCP server: epistemic vectors → Strudel patterns (this doc, above)
+- `python/` — new Python MCP server: Bandcamp integration, stem separation, taste profiling (Sprints 1-3). Quickstart: `cd python && uv sync && uv run epistemic-dj-mcp`
+- `docs/human/` — product narrative and vision, for people
+- `docs/dev/` — technical architecture, for engineers and future Claude sessions
+
 ## License
 
 MIT

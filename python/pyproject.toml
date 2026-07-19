@@ -1,0 +1,55 @@
+[project]
+name = "epistemic-dj"
+version = "0.1.0"
+description = "Bandcamp integration, stem separation, and epistemic taste-profiling for epistemic-dj. Complements the existing JS MCP server (src/) which handles epistemic-state-to-sound generation."
+readme = "../README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "mcp>=1.0.0",
+    "pydantic>=2.7",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+epistemic-dj-mcp = "epistemic_dj.mcp_server:main"
+
+[project.optional-dependencies]
+separation = [
+    # Stem separation deps are heavy (torch etc.) and GPU-dependent -- kept
+    # optional so `uv sync` stays fast for anyone just working on the
+    # Bandcamp/taste-profiling layers. Install with `uv sync --extra separation`.
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "pyright>=1.1",
+    # musdb: NOT a full-dataset download. musdb.DB(download=True) fetches
+    # only the ~10MB 7-second-excerpt sample set (MUSDB18's own
+    # quick-eval/prototyping mode) -- legitimate, free, tiny. Full
+    # MUSDB18HQ (real separation-quality benchmarking) is a separate,
+    # deliberate download from Zenodo, not something tests pull automatically.
+    "musdb>=0.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["epistemic_dj", "tests"]
+typeCheckingMode = "basic"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

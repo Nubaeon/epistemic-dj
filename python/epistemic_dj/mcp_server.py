@@ -8,12 +8,23 @@ epistemic-state-to-sound generation. Two servers, not a rewrite.
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime
+
 from bandcamp_async_api.models import CollectionItem, SearchResultItem
 from mcp.server.fastmcp import FastMCP
 
 from epistemic_dj.bandcamp.adapter import collection_item_to_track
 from epistemic_dj.bandcamp.client import MissingIdentityTokenError, get_client, managed_client
-from epistemic_dj.models import MusicVectors, TastePatternType, TasteProfile, Track
+from epistemic_dj.models import (
+    ConsumptionMode,
+    CuratedTrack,
+    Mixtape,
+    MusicVectors,
+    TastePatternType,
+    TasteProfile,
+    Track,
+)
 from epistemic_dj.taste import TasteStore
 
 mcp = FastMCP("epistemic-dj")
@@ -163,6 +174,31 @@ def taste_export_profile(user_id: str) -> TasteProfile:
     docs/dev/architecture.md.
     """
     return _taste_store.get_profile(user_id)
+
+
+@mcp.tool()
+def taste_save_mixtape(user_id: str, mode: str, tracks: list[CuratedTrack]) -> Mixtape:
+    """Persist a curated, ranked track list as a Mixtape.
+
+    The ranking/reasoning is done by the calling Claude reading the user's
+    taste profile (taste_export_profile) against track candidates (e.g.
+    from bandcamp_search_candidates), NOT computed here -- this tool is
+    persistence only, matching the original design ('Claude reads both,
+    generates match score + reasoning'). mode must be one of: focus,
+    discovery, dj, creative_seed.
+
+    Note: creator_practice_id is set to user_id directly for now -- the
+    per-user-practice architecture (mesh-sharing) is deferred (see d15),
+    not built yet.
+    """
+    mixtape = Mixtape(
+        id=str(uuid.uuid4()),
+        created_at=datetime.now(UTC),
+        creator_practice_id=user_id,
+        mode=ConsumptionMode(mode),
+        tracks=tracks,
+    )
+    return _taste_store.save_mixtape(mixtape)
 
 
 def main() -> None:

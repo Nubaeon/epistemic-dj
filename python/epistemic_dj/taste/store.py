@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from epistemic_dj.models import (
+    Mixtape,
     MusicVectors,
     TasteFinding,
     TastePattern,
@@ -50,9 +51,22 @@ CREATE TABLE IF NOT EXISTS taste_patterns (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS mixtapes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_findings_user ON taste_findings(user_id);
 CREATE INDEX IF NOT EXISTS idx_patterns_user ON taste_patterns(user_id);
+CREATE INDEX IF NOT EXISTS idx_mixtapes_user ON mixtapes(user_id);
 """
+
+
+class MixtapeNotFoundError(KeyError):
+    pass
 
 
 class PatternNotFoundError(KeyError):
@@ -185,6 +199,31 @@ class TasteStore:
             patterns=patterns,
             vectors=_heuristic_vectors(findings, patterns),
         )
+
+    def save_mixtape(self, mixtape: Mixtape) -> Mixtape:
+        self._conn.execute(
+            "INSERT INTO mixtapes (id, user_id, created_at, mode, data) VALUES (?, ?, ?, ?, ?)",
+            (
+                mixtape.id, mixtape.creator_practice_id, mixtape.created_at.isoformat(),
+                mixtape.mode.value, mixtape.model_dump_json(),
+            ),
+        )
+        self._conn.commit()
+        return mixtape
+
+    def get_mixtape(self, mixtape_id: str) -> Mixtape:
+        row = self._conn.execute(
+            "SELECT data FROM mixtapes WHERE id = ?", (mixtape_id,)
+        ).fetchone()
+        if row is None:
+            raise MixtapeNotFoundError(mixtape_id)
+        return Mixtape.model_validate_json(row[0])
+
+    def get_mixtapes(self, user_id: str) -> list[Mixtape]:
+        rows = self._conn.execute(
+            "SELECT data FROM mixtapes WHERE user_id = ? ORDER BY created_at", (user_id,)
+        ).fetchall()
+        return [Mixtape.model_validate_json(r[0]) for r in rows]
 
 
 def _heuristic_vectors(

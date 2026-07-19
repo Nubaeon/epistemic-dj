@@ -8,6 +8,6 @@ once there's an actual module/skills built around it. See
 docs/dev/architecture.md.
 """
 
-from epistemic_dj.taste.store import PatternNotFoundError, TasteStore
+from epistemic_dj.taste.store import MixtapeNotFoundError, PatternNotFoundError, TasteStore
 
-__all__ = ["TasteStore", "PatternNotFoundError"]
+__all__ = ["TasteStore", "PatternNotFoundError", "MixtapeNotFoundError"]

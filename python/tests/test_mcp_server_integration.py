@@ -52,6 +52,7 @@ async def test_all_expected_tools_are_registered():
         "taste_log_pattern",
         "taste_decay_pattern",
         "taste_export_profile",
+        "taste_save_mixtape",
     }
 
 

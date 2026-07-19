@@ -34,6 +34,10 @@ async def test_all_expected_tools_are_registered():
         "bandcamp_set_credentials",
         "bandcamp_get_collection",
         "bandcamp_search",
+        "taste_log_finding",
+        "taste_log_pattern",
+        "taste_decay_pattern",
+        "taste_export_profile",
     }
 
 

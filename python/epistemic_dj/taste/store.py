@@ -15,7 +15,14 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from epistemic_dj.models import MusicVectors, TasteFinding, TastePattern, TastePatternType
+from epistemic_dj.models import (
+    MusicVectors,
+    TasteFinding,
+    TastePattern,
+    TastePatternType,
+    TasteProfile,
+    UserTasteVectors,
+)
 
 DEFAULT_DB_PATH = Path(__file__).parent / "taste.db"
 
@@ -168,6 +175,50 @@ class TasteStore:
             (user_id,),
         ).fetchall()
         return [_row_to_pattern(r) for r in rows]
+
+    def get_profile(self, user_id: str) -> TasteProfile:
+        findings = self.get_findings(user_id)
+        patterns = self.get_patterns(user_id)
+        return TasteProfile(
+            user_id=user_id,
+            findings=findings,
+            patterns=patterns,
+            vectors=_heuristic_vectors(findings, patterns),
+        )
+
+
+def _heuristic_vectors(
+    findings: list[TasteFinding], patterns: list[TastePattern]
+) -> UserTasteVectors | None:
+    """Sprint 2 MVP: derived from interview signal VOLUME, not real behavioral
+    telemetry (skip/replay/collect), which doesn't exist yet. Returns None
+    below MIN_SIGNAL_FOR_VECTORS rather than fabricating precision from
+    almost nothing.
+    """
+    total_signal = len(findings) + len(patterns)
+    if total_signal < MIN_SIGNAL_FOR_VECTORS:
+        return None
+
+    avg_confidence = (
+        sum(p.confidence for p in patterns) / len(patterns) if patterns else 0.5
+    )
+    density = min(1.0, total_signal / 10)
+
+    return UserTasteVectors(
+        know=min(1.0, len(patterns) / 5),
+        do=0.3,  # no catalog matched against this profile yet
+        context=0.4,  # onboarding interview only, no session-context signal yet
+        clarity=avg_confidence,
+        coherence=avg_confidence,  # no contradiction-detection yet -- approximated via confidence
+        signal=min(1.0, len(findings) / 10),
+        density=density,
+        state=0.3,  # no ongoing-session awareness yet
+        change=0.0,  # first snapshot, nothing to compare against
+        completion=density,
+        impact=0.5,
+        engagement=min(1.0, total_signal / 8),
+        uncertainty=1.0 - avg_confidence,
+    )
 
 
 def _row_to_pattern(row: tuple) -> TastePattern:

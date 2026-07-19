@@ -14,9 +14,12 @@ from mcp.server.fastmcp import FastMCP
 
 from epistemic_dj.bandcamp.adapter import collection_item_to_track
 from epistemic_dj.bandcamp.client import MissingIdentityTokenError, get_client
-from epistemic_dj.models import Track
+from epistemic_dj.models import MusicVectors, TastePatternType, TasteProfile, Track
+from epistemic_dj.taste import TasteStore
 
 mcp = FastMCP("epistemic-dj")
+
+_taste_store = TasteStore()
 
 # Session-scoped authenticated client. Bandcamp has no public OAuth for
 # personal collections (confirmed via bandcamp.com/developer -- the real
@@ -83,6 +86,59 @@ async def bandcamp_search(query: str) -> list[dict]:
         return [
             {"type": r.type, "id": r.id, "name": r.name, "url": r.url} for r in results
         ]
+
+
+@mcp.tool()
+def taste_log_finding(user_id: str, content: str, impact: float = 0.5) -> str:
+    """Log a raw piece of taste signal for a user -- something they said during
+    an onboarding interview (Sprint 2 MVP source; later: behavioral signal).
+    """
+    finding = _taste_store.log_finding(user_id, content, impact)
+    return f"Logged finding {finding.id} for {user_id}."
+
+
+@mcp.tool()
+def taste_log_pattern(
+    user_id: str,
+    content: str,
+    pattern_type: str,
+    confidence: float,
+    vectors: MusicVectors | None = None,
+) -> str:
+    """Log a distilled taste pattern or anti-pattern for a user.
+
+    pattern_type must be 'pattern' or 'anti_pattern'. Call this when a
+    cross-finding pattern becomes clear during the interview (e.g. 'prefers
+    instrumental tracks for focus work'), not for every raw statement --
+    that's what taste_log_finding is for.
+    """
+    pattern = _taste_store.log_pattern(
+        user_id, content, TastePatternType(pattern_type), confidence, vectors
+    )
+    return f"Logged {pattern_type} {pattern.id} for {user_id} (confidence={confidence})."
+
+
+@mcp.tool()
+def taste_decay_pattern(pattern_id: str, factor: float = 0.7, floor: float = 0.3) -> str:
+    """Explicitly decay a pattern's confidence -- call this when a new finding
+    contradicts an existing pattern you logged earlier. Not automatic: no
+    semantic-similarity infrastructure exists yet to detect contradictions
+    on its own, so this is a judgment call for the interviewing Claude to make.
+    """
+    pattern = _taste_store.decay_pattern(pattern_id, factor, floor)
+    return f"Pattern {pattern_id} confidence decayed to {pattern.confidence}."
+
+
+@mcp.tool()
+def taste_export_profile(user_id: str) -> TasteProfile:
+    """Export a user's taste profile: raw findings + distilled patterns.
+
+    `vectors` on the result is heuristic-only (interview signal volume, not
+    real behavioral telemetry) and will be null if there isn't enough
+    signal yet (fewer than 3 findings+patterns combined) -- see
+    docs/dev/architecture.md.
+    """
+    return _taste_store.get_profile(user_id)
 
 
 def main() -> None:

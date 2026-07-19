@@ -1,12 +1,45 @@
 # Track-Prediction Calibration Loop — Spec
 
-Status: **Standalone architecture (v2). Ready to build.**
+Status: **Shipped (v3), Bandcamp path live-proven end-to-end.**
 Origin: David's observation that anti-patterns (dead-ends/mistakes) are the
 strongest calibration signal in engineering work, and that music-taste
 prediction might generate that signal *faster and cheaper* than most
 engineering domains — every track is a fast, cheap, atomic, immediately
 falsifiable prediction, unlike incident-postmortem-timescale feedback in most
 critical-software work.
+
+**Revision note (2026-07-19, v3)**: a second correction from David after v2
+shipped — predictions must be grounded in cosine similarity between the
+track's *real platform/artist-assigned tags* and whatever the onboarding
+interview suggests looking for, not in reading the track/album name (v2 still
+allowed title-text guessing as the default path). Also: audio measurement
+must never start at position 0, and should sample beginning/middle/end.
+Both now shipped:
+
+- `embedding.py` — local `sentence-transformers` (all-MiniLM-L6-v2, already
+  cached on this machine, no network dependency at runtime).
+  `predicted_kinetic_energy_from_tags()` compares real tags against fixed
+  energy-anchor phrases; `tag_taste_similarity()` is a separate,
+  non-Brier-scored signal for taste-relevance (stored as
+  `TrackPrediction.taste_similarity`).
+- `sample_track()` (`audio/analysis.py`) — beginning(≥45s in)/middle/end
+  windows, one Range download, `librosa.load(offset=...)` per window, mean-
+  aggregated. Wired into both `audio_analyze_track` (Bandcamp) and YouTube's
+  `measure_track` — this wiring was initially missed (built and unit-tested
+  but not actually called from the live measurement paths) and caught before
+  the final proof run, logged as a mistake, not silently fixed.
+
+**Live proof run (6 real Bandcamp tracks, tag-based prediction + multi-point
+measurement)**: 4/6 predictions verified (vs. 2/6 in the earlier title-text-
+based run) — the underlying energy prediction genuinely improved. But the
+Brier score got *worse* (0.5157 vs. 0.5029), because the confidence formula
+(`abs(predicted_energy − 0.5) × 2`) is badly under-confident: predicted
+values cluster tightly in 0.41–0.56 (embedding cosine similarity has a
+compressed dynamic range for short tag phrases), so derived confidence never
+exceeded 0.18 even on correct predictions. This is a distinct, specific flaw
+in the confidence-derivation formula, separable from the underlying energy
+prediction — needs recalibration against more measured outcomes, not a sign
+the whole approach failed. Reported as found, not smoothed over.
 
 **Revision note (2026-07-19)**: v1 of this spec routed the predict/measure/
 resolve loop through the Empirica CLI (`assumption-log` /
@@ -220,3 +253,13 @@ WAL mode and deciding on `practitioner_id` assignment for concurrent runs).
   currently lives in conversation/git notes only, per the earlier decision
   to defer full `TasteStore` integration until a working module exists to
   justify it.
+- **No schema migrations**: `CalibrationStore`'s `CREATE TABLE IF NOT
+  EXISTS` doesn't add columns to an already-existing local `calibration.db`
+  — hit this directly when `taste_similarity` was added (had to delete the
+  local dev DB and let it recreate). Fine for throwaway dev data; will need
+  real migration handling before this is anything more than local dev state.
+- **Confidence-formula recalibration needed**: the anchor-margin confidence
+  formula is honestly under-confident (see the v3 live proof run above) —
+  next iteration should either widen the anchor phrases' discriminative
+  power or recalibrate the confidence mapping against a larger measured
+  sample, not just accept the current formula as final.

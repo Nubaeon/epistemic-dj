@@ -230,3 +230,62 @@ def test_calibration_brier_empty_returns_none():
     result = server.calibration_brier()
     assert result.brier_score is None
     assert result.n == 0
+
+
+async def test_bandcamp_get_track_tags_returns_real_tags(monkeypatch):
+    class FakeTrack:
+        id = 123
+
+    class FakeClient:
+        pass
+
+    @asynccontextmanager
+    async def fake_managed_client(identity_token=None):
+        yield FakeClient()
+
+    async def fake_get_track_with_tags(client, artist_id, track_id):
+        assert artist_id == 861206575
+        assert track_id == 2615539690
+        return FakeTrack(), ["Experimental", "Transcendental Dance Pop"]
+
+    monkeypatch.setattr(server, "managed_client", fake_managed_client)
+    monkeypatch.setattr(server, "get_track_with_tags", fake_get_track_with_tags)
+
+    tags = await server.bandcamp_get_track_tags(artist_id=861206575, track_id=2615539690)
+
+    assert tags == ["Experimental", "Transcendental Dance Pop"]
+
+
+def test_calibration_predict_from_tags_grounds_prediction_in_real_tags():
+    prediction = server.calibration_predict_from_tags(
+        source="bandcamp", track_ref="1:2", track_name="Power Breaks", term="power breaks",
+        track_tags=["breakbeat", "jungle", "drum and bass", "high energy"],
+        taste_target_terms=["breakbeat", "power breaks", "high energy electronic"],
+    )
+
+    assert prediction.predicted_kinetic_energy is not None
+    assert 0.0 <= prediction.predicted_kinetic_energy <= 1.0
+    assert prediction.confidence is not None
+    assert prediction.taste_similarity is not None
+
+
+def test_calibration_predict_from_tags_low_energy_tags_predict_low_energy():
+    ambient = server.calibration_predict_from_tags(
+        source="bandcamp", track_ref="1:2", track_name="X", term="ambient",
+        track_tags=["ambient", "drone", "meditation", "calm"],
+        taste_target_terms=["ambient"],
+    )
+    breaks = server.calibration_predict_from_tags(
+        source="bandcamp", track_ref="3:4", track_name="Y", term="breaks",
+        track_tags=["breakbeat", "jungle", "drum and bass", "high energy"],
+        taste_target_terms=["breakbeat"],
+    )
+    assert ambient.predicted_kinetic_energy < breaks.predicted_kinetic_energy
+
+
+def test_calibration_predict_from_tags_raises_on_empty_tags():
+    with pytest.raises(ValueError, match="track_tags is empty"):
+        server.calibration_predict_from_tags(
+            source="youtube", track_ref="vid", track_name="X", term="t",
+            track_tags=[], taste_target_terms=["breakbeat"],
+        )

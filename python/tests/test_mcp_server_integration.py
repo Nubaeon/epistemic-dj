@@ -56,9 +56,11 @@ async def test_all_expected_tools_are_registered():
         "audio_analyze_track",
         "youtube_search_tracks",
         "calibration_predict",
+        "calibration_predict_from_tags",
         "calibration_resolve",
         "calibration_brier",
         "calibration_list_predictions",
+        "bandcamp_get_track_tags",
     }
 
 

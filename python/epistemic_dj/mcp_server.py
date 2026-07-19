@@ -16,8 +16,14 @@ from mcp.server.fastmcp import FastMCP
 
 from epistemic_dj.audio import analyze_track, audio_features_to_vectors
 from epistemic_dj.bandcamp.adapter import collection_item_to_track
-from epistemic_dj.bandcamp.client import MissingIdentityTokenError, get_client, managed_client
+from epistemic_dj.bandcamp.client import (
+    MissingIdentityTokenError,
+    get_client,
+    get_track_with_tags,
+    managed_client,
+)
 from epistemic_dj.calibration import CalibrationStore
+from epistemic_dj.embedding import predicted_kinetic_energy_from_tags, tag_taste_similarity
 from epistemic_dj.models import (
     BrierResult,
     ConsumptionMode,
@@ -183,6 +189,60 @@ def youtube_search_tracks(query: str, limit: int = 10) -> list[Track]:
 
 
 @mcp.tool()
+async def bandcamp_get_track_tags(artist_id: int, track_id: int) -> list[str]:
+    """Fetches a Bandcamp track's REAL artist/platform-assigned genre tags.
+
+    Not title/tag text you read yourself -- structured metadata Bandcamp
+    actually stores. Confirmed live these can diverge sharply from what a
+    title suggests (a track titled "Power Breaks" was actually tagged
+    "Experimental"/"Transcendental Dance Pop"). This is what
+    calibration_predict_from_tags should be called with, not track_name.
+    """
+    async with managed_client() as client:
+        _track, tags = await get_track_with_tags(client, artist_id, track_id)
+    return tags
+
+
+@mcp.tool()
+def calibration_predict_from_tags(
+    source: str,
+    track_ref: str,
+    track_name: str,
+    term: str,
+    track_tags: list[str],
+    taste_target_terms: list[str],
+    practitioner_id: str = "default",
+) -> TrackPrediction:
+    """Preferred prediction path: grounds the forecast in the track's REAL
+    platform/artist-assigned tags (bandcamp_get_track_tags), not title text.
+
+    predicted_kinetic_energy comes from cosine similarity between track_tags
+    and fixed high/low-energy anchor phrases; confidence reflects how
+    decisively those anchors differentiate (not taste-relevance). Separately
+    computes taste_similarity: cosine similarity between track_tags and
+    taste_target_terms (whatever the onboarding interview/taste profile
+    suggests looking for) -- a different question from energy prediction,
+    stored but not Brier-scored. If track_tags is empty (no real tag data --
+    e.g. YouTube, which has no artist-tag equivalent), falls back to
+    calibration_predict's manual judgment-call path instead of guessing.
+    """
+    predicted_energy = predicted_kinetic_energy_from_tags(track_tags)
+    if predicted_energy is None:
+        raise ValueError(
+            "track_tags is empty -- no real tag data to predict from. "
+            "Use calibration_predict's manual judgment-call path instead "
+            "(e.g. for YouTube, which has no artist-tag equivalent)."
+        )
+    confidence = abs(predicted_energy - 0.5) * 2  # how decisively the anchors differentiate
+    similarity = tag_taste_similarity(track_tags, taste_target_terms)
+    return _calibration_store.log_prediction(
+        source=source, track_ref=track_ref, track_name=track_name, term=term,
+        predicted_kinetic_energy=predicted_energy, confidence=confidence,
+        practitioner_id=practitioner_id, taste_similarity=similarity,
+    )
+
+
+@mcp.tool()
 def calibration_predict(
     source: str,
     track_ref: str,
@@ -192,15 +252,17 @@ def calibration_predict(
     confidence: float,
     practitioner_id: str = "default",
 ) -> TrackPrediction:
-    """Log a title/tag-based prediction for a candidate track BEFORE measuring it.
+    """Manual judgment-call prediction path -- fallback for when real tag
+    data doesn't exist (e.g. YouTube, which has no artist-tag equivalent to
+    Bandcamp's). Prefer calibration_predict_from_tags when track_tags is
+    available; it's grounded in real platform data, not title-text reading.
 
     source must be 'bandcamp' or 'youtube'. track_ref: for bandcamp,
     'artist_id:track_id' (matching audio_analyze_track's args); for
     youtube, the video id (matching youtube_search_tracks' Track.id).
-    predicted_kinetic_energy and confidence must be a genuine judgment call
-    from track_name/term/tags alone -- read them, form a real belief, don't
-    default to a fixed value. Call calibration_resolve next to measure the
-    real audio and see whether the prediction holds up.
+    predicted_kinetic_energy and confidence must be a genuine judgment call,
+    not a default value. Call calibration_resolve next to measure the real
+    audio and see whether the prediction holds up.
     """
     return _calibration_store.log_prediction(
         source=source, track_ref=track_ref, track_name=track_name, term=term,

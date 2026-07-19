@@ -251,14 +251,21 @@ class TasteProfile(BaseModel):
 
 
 class TrackPrediction(BaseModel):
-    """A title/tag-based audio-feature forecast for one candidate track,
+    """A real-tag-grounded audio-feature forecast for one candidate track,
     resolved against real measurement once audio_analyze_track() runs.
 
     Standalone product data (see docs/dev/track-calibration-loop.md) --
     deliberately NOT an Empirica assumption artifact, mirroring the same
     "keep product data out of the AI's own epistemic tracking" call already
-    made for TasteStore. predicted_kinetic_energy/confidence are a genuine
-    judgment call from title/tags/genre-text alone, made before measurement;
+    made for TasteStore.
+
+    predicted_kinetic_energy/confidence come from cosine similarity between
+    the track's real platform/artist-assigned tags and fixed energy-anchor
+    phrases (embedding.py) -- NOT from reading the track title/album name
+    (confirmed unreliable: a track literally titled "Power Breaks" was
+    actually tagged "Experimental"/"Transcendental Dance Pop"). confidence
+    is derived from how decisively the anchors differentiate, not from
+    taste-relevance -- see taste_similarity for that, a separate question.
     measured_vectors/verified/delta/resolved_at stay None until resolved.
     """
 
@@ -270,6 +277,14 @@ class TrackPrediction(BaseModel):
     predicted_kinetic_energy: Scalar
     predicted_vectors: MusicVectors | None = None
     confidence: Scalar = Field(description="Stated P(confirmed) -- the Brier-scoreable forecast.")
+    taste_similarity: Scalar | None = Field(
+        default=None,
+        description="Cosine similarity between the track's real tags and the "
+        "onboarding-interview/taste-profile target terms -- a separate question "
+        "from energy-prediction confidence (does this track match the listener's "
+        "taste, not whether the kinetic_energy guess is well-calibrated). None "
+        "when not computed (e.g. no taste-target terms supplied).",
+    )
     practitioner_id: str
     created_at: datetime
 

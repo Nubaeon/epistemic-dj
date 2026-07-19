@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS track_predictions (
     predicted_kinetic_energy REAL NOT NULL,
     predicted_vectors TEXT,
     confidence REAL NOT NULL,
+    taste_similarity REAL,
     practitioner_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     measured_vectors TEXT,
@@ -74,6 +75,7 @@ class CalibrationStore:
         confidence: float,
         practitioner_id: str = "default",
         predicted_vectors: MusicVectors | None = None,
+        taste_similarity: float | None = None,
     ) -> TrackPrediction:
         prediction = TrackPrediction(
             id=str(uuid.uuid4()),
@@ -84,21 +86,22 @@ class CalibrationStore:
             predicted_kinetic_energy=predicted_kinetic_energy,
             predicted_vectors=predicted_vectors,
             confidence=confidence,
+            taste_similarity=taste_similarity,
             practitioner_id=practitioner_id,
             created_at=datetime.now(UTC),
         )
         self._conn.execute(
             "INSERT INTO track_predictions "
             "(id, source, track_ref, track_name, term, predicted_kinetic_energy, "
-            "predicted_vectors, confidence, practitioner_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "predicted_vectors, confidence, taste_similarity, practitioner_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 prediction.id, prediction.source, prediction.track_ref,
                 prediction.track_name, prediction.term, prediction.predicted_kinetic_energy,
                 prediction.predicted_vectors.model_dump_json()
                 if prediction.predicted_vectors else None,
-                prediction.confidence, prediction.practitioner_id,
-                prediction.created_at.isoformat(),
+                prediction.confidence, prediction.taste_similarity,
+                prediction.practitioner_id, prediction.created_at.isoformat(),
             ),
         )
         self._conn.commit()
@@ -136,7 +139,7 @@ class CalibrationStore:
     def get_prediction(self, prediction_id: str) -> TrackPrediction:
         row = self._conn.execute(
             "SELECT id, source, track_ref, track_name, term, predicted_kinetic_energy, "
-            "predicted_vectors, confidence, practitioner_id, created_at, "
+            "predicted_vectors, confidence, taste_similarity, practitioner_id, created_at, "
             "measured_vectors, verified, delta, resolved_at "
             "FROM track_predictions WHERE id = ?",
             (prediction_id,),
@@ -154,7 +157,7 @@ class CalibrationStore:
     ) -> list[TrackPrediction]:
         query = (
             "SELECT id, source, track_ref, track_name, term, predicted_kinetic_energy, "
-            "predicted_vectors, confidence, practitioner_id, created_at, "
+            "predicted_vectors, confidence, taste_similarity, practitioner_id, created_at, "
             "measured_vectors, verified, delta, resolved_at FROM track_predictions"
         )
         clauses = []
@@ -212,10 +215,11 @@ def _row_to_prediction(row: tuple) -> TrackPrediction:
         predicted_kinetic_energy=row[5],
         predicted_vectors=MusicVectors.model_validate_json(row[6]) if row[6] else None,
         confidence=row[7],
-        practitioner_id=row[8],
-        created_at=datetime.fromisoformat(row[9]),
-        measured_vectors=MusicVectors.model_validate_json(row[10]) if row[10] else None,
-        verified=bool(row[11]) if row[11] is not None else None,
-        delta=row[12],
-        resolved_at=datetime.fromisoformat(row[13]) if row[13] else None,
+        taste_similarity=row[8],
+        practitioner_id=row[9],
+        created_at=datetime.fromisoformat(row[10]),
+        measured_vectors=MusicVectors.model_validate_json(row[11]) if row[11] else None,
+        verified=bool(row[12]) if row[12] is not None else None,
+        delta=row[13],
+        resolved_at=datetime.fromisoformat(row[14]) if row[14] else None,
     )

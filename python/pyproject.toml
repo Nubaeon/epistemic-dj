@@ -28,6 +28,7 @@ dependencies = [
     # GETs to real-time playback speed).
     "ytmusicapi>=1.12.1",
     "yt-dlp>=2026.7.4",
+    "sentence-transformers>=5.6.0",
 ]
 
 [project.scripts]

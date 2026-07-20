@@ -16,11 +16,23 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from epistemic_dj.models import BrierResult, MusicVectors, TrackPrediction
+from epistemic_dj.calibration.bayesian_belief import DEFAULT_OBSERVATION_VARIANCE, update_belief
+from epistemic_dj.models import Belief, BrierResult, MusicVectors, TrackPrediction
 
 DEFAULT_DB_PATH = Path(__file__).parent / "calibration.db"
 
 DEFAULT_TOLERANCE = 0.2
+
+# Uninformative-ish priors for the two beliefs tracked here (see
+# bayesian_belief.py). TERM_BIAS starts at "no known bias" (mean=0).
+# MARGIN_SCALE starts at 0.5 -- the ORIGINAL assumption baked into the old
+# confidence=margin*2 formula -- so evidence pulls it toward the true,
+# much smaller observed scale rather than starting from nothing.
+TERM_BIAS_PRIOR_MEAN = 0.0
+TERM_BIAS_PRIOR_VARIANCE = 0.1
+MARGIN_SCALE_PRIOR_MEAN = 0.5
+MARGIN_SCALE_PRIOR_VARIANCE = 0.1
+GLOBAL_BELIEF_KEY = "__global__"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS track_predictions (
@@ -44,6 +56,16 @@ CREATE TABLE IF NOT EXISTS track_predictions (
 CREATE INDEX IF NOT EXISTS idx_predictions_term ON track_predictions(term);
 CREATE INDEX IF NOT EXISTS idx_predictions_practitioner
     ON track_predictions(practitioner_id);
+
+CREATE TABLE IF NOT EXISTS beliefs (
+    belief_type TEXT NOT NULL,
+    key TEXT NOT NULL,
+    mean REAL NOT NULL,
+    variance REAL NOT NULL,
+    evidence_count INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (belief_type, key)
+);
 """
 
 
@@ -120,7 +142,9 @@ class CalibrationStore:
         if row is None:
             raise PredictionNotFoundError(prediction_id)
 
-        delta = abs(row[0] - measured_vectors.kinetic_energy.value)
+        predicted_energy = row[0]
+        measured_energy = measured_vectors.kinetic_energy.value
+        delta = abs(predicted_energy - measured_energy)
         verified = delta <= tolerance
         resolved_at = datetime.now(UTC)
         self._conn.execute(
@@ -132,7 +156,86 @@ class CalibrationStore:
             ),
         )
         self._conn.commit()
+
+        # Closed-loop bias correction: this resolution's signed residual
+        # becomes evidence for the term's bias belief, informing the NEXT
+        # prediction logged for this term (see log_prediction's
+        # apply_term_bias_correction). Signed (not abs) so direction is
+        # preserved -- consistently over- or under-predicting a term should
+        # converge the belief toward that bias.
+        term = self._conn.execute(
+            "SELECT term FROM track_predictions WHERE id = ?", (prediction_id,)
+        ).fetchone()[0]
+        self._update_belief("term_bias", term, predicted_energy - measured_energy)
+
         return self.get_prediction(prediction_id)
+
+    def _get_belief(
+        self, belief_type: str, key: str, prior_mean: float, prior_variance: float
+    ) -> Belief:
+        row = self._conn.execute(
+            "SELECT mean, variance, evidence_count FROM beliefs "
+            "WHERE belief_type = ? AND key = ?",
+            (belief_type, key),
+        ).fetchone()
+        if row is None:
+            return Belief(mean=prior_mean, variance=prior_variance, evidence_count=0)
+        return Belief(mean=row[0], variance=row[1], evidence_count=row[2])
+
+    def _update_belief(
+        self,
+        belief_type: str,
+        key: str,
+        observation: float,
+        obs_variance: float = DEFAULT_OBSERVATION_VARIANCE,
+    ) -> Belief:
+        prior_mean, prior_variance = self._belief_priors(belief_type)
+        current = self._get_belief(belief_type, key, prior_mean, prior_variance)
+        updated = update_belief(
+            current.mean, current.variance, current.evidence_count, observation, obs_variance
+        )
+        self._conn.execute(
+            "INSERT INTO beliefs (belief_type, key, mean, variance, evidence_count, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(belief_type, key) DO UPDATE SET "
+            "mean = excluded.mean, variance = excluded.variance, "
+            "evidence_count = excluded.evidence_count, updated_at = excluded.updated_at",
+            (
+                belief_type, key, updated.mean, updated.variance, updated.evidence_count,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return updated
+
+    @staticmethod
+    def _belief_priors(belief_type: str) -> tuple[float, float]:
+        if belief_type == "term_bias":
+            return TERM_BIAS_PRIOR_MEAN, TERM_BIAS_PRIOR_VARIANCE
+        if belief_type == "margin_scale":
+            return MARGIN_SCALE_PRIOR_MEAN, MARGIN_SCALE_PRIOR_VARIANCE
+        raise ValueError(f"Unknown belief_type '{belief_type}'.")
+
+    def get_term_bias(self, term: str) -> Belief:
+        """Current belief about how far off (signed) predictions for this
+        term have run historically. Subtract .mean from a raw prediction to
+        bias-correct it -- see mcp_server.calibration_predict_from_tags.
+        """
+        return self._get_belief("term_bias", term, TERM_BIAS_PRIOR_MEAN, TERM_BIAS_PRIOR_VARIANCE)
+
+    def get_margin_scale(self) -> Belief:
+        """Current belief about the typical observed anchor-margin scale
+        (global, not per-term -- too little data per term to slice this
+        further). Starts at 0.5 (the original, wrong assumption) and is
+        pulled toward the true smaller scale as margin observations
+        accumulate via update_margin_scale.
+        """
+        return self._get_belief(
+            "margin_scale", GLOBAL_BELIEF_KEY, MARGIN_SCALE_PRIOR_MEAN, MARGIN_SCALE_PRIOR_VARIANCE
+        )
+
+    def update_margin_scale(self, raw_margin: float) -> Belief:
+        return self._update_belief("margin_scale", GLOBAL_BELIEF_KEY, raw_margin)
 
     def get_prediction(self, prediction_id: str) -> TrackPrediction:
         row = self._conn.execute(

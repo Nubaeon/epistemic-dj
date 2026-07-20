@@ -225,9 +225,13 @@ def calibration_predict_from_tags(
     """Preferred prediction path: grounds the forecast in the track's REAL
     platform/artist-assigned tags (bandcamp_get_track_tags), not title text.
 
-    predicted_kinetic_energy comes from cosine similarity between track_tags
-    and fixed high/low-energy anchor phrases; confidence reflects how
-    decisively those anchors differentiate (not taste-relevance). Separately
+    predicted_kinetic_energy: raw cosine-similarity estimate, bias-corrected
+    by this term's accumulated Bayesian belief (CalibrationStore.get_term_bias
+    -- closed-loop: each resolution's residual updates the belief, correcting
+    future predictions for the same term). confidence: raw anchor margin
+    rescaled against a Bayesian-tracked global margin_scale belief instead of
+    the old hardcoded margin*2 (which assumed a 0-1 margin range that never
+    actually occurs -- see docs/dev/track-calibration-loop.md). Separately
     computes taste_similarity: cosine similarity between track_tags and
     taste_target_terms (whatever the onboarding interview/taste profile
     suggests looking for) -- a different question from energy prediction,
@@ -235,14 +239,24 @@ def calibration_predict_from_tags(
     e.g. YouTube, which has no artist-tag equivalent), falls back to
     calibration_predict's manual judgment-call path instead of guessing.
     """
-    predicted_energy = predicted_kinetic_energy_from_tags(track_tags)
-    if predicted_energy is None:
+    raw_predicted_energy = predicted_kinetic_energy_from_tags(track_tags)
+    if raw_predicted_energy is None:
         raise ValueError(
             "track_tags is empty -- no real tag data to predict from. "
             "Use calibration_predict's manual judgment-call path instead "
             "(e.g. for YouTube, which has no artist-tag equivalent)."
         )
-    confidence = abs(predicted_energy - 0.5) * 2  # how decisively the anchors differentiate
+
+    term_bias = _calibration_store.get_term_bias(term)
+    predicted_energy = max(0.0, min(1.0, raw_predicted_energy - term_bias.mean))
+
+    raw_margin = abs(raw_predicted_energy - 0.5)
+    margin_scale = _calibration_store.get_margin_scale()
+    confidence = (
+        max(0.0, min(1.0, raw_margin / (2 * margin_scale.mean))) if margin_scale.mean > 0 else 0.0
+    )
+    _calibration_store.update_margin_scale(raw_margin)
+
     similarity = tag_taste_similarity(track_tags, taste_target_terms)
     return _calibration_store.log_prediction(
         source=source, track_ref=track_ref, track_name=track_name, term=term,

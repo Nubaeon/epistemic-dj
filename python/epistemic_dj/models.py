@@ -333,3 +333,18 @@ class BrierResult(BaseModel):
         default=None, description="None when n=0 -- no fabricated score from an empty sample."
     )
     n: int
+
+
+class Belief(BaseModel):
+    """A Bayesian conjugate-Gaussian belief -- standalone reimplementation of
+    Empirica's own BayesianBeliefManager math (core/bayesian_beliefs.py),
+    used here for two closed-loop corrections (see calibration/store.py):
+    per-term prediction bias, and the global confidence margin-scale.
+    Degrades gracefully at small n (the prior dominates until evidence
+    accumulates), unlike isotonic regression -- deliberately chosen for
+    that reason at current sample sizes (~6 predictions per genre term).
+    """
+
+    mean: Scalar
+    variance: Scalar
+    evidence_count: int

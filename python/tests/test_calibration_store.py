@@ -118,3 +118,56 @@ def test_unresolved_predictions_excluded_from_brier(store):
     )
     result = store.brier_score()
     assert result.n == 0
+
+
+def test_get_term_bias_returns_uninformative_prior_for_new_term(store):
+    belief = store.get_term_bias("never-seen-before")
+    assert belief.mean == pytest.approx(0.0)
+    assert belief.evidence_count == 0
+
+
+def test_resolve_prediction_updates_term_bias_belief(store):
+    prediction = store.log_prediction(
+        source="bandcamp", track_ref="1:1", track_name="X", term="ambient",
+        predicted_kinetic_energy=0.7, confidence=0.5,
+    )
+    # predicted 0.7, measured 0.4 -> consistently over-predicting this term
+    store.resolve_prediction(prediction.id, _vectors(0.4, 0.5))
+
+    belief = store.get_term_bias("ambient")
+    assert belief.evidence_count == 1
+    assert belief.mean > 0.0  # positive bias = over-predicted
+
+
+def test_term_bias_is_scoped_per_term(store):
+    p1 = store.log_prediction(
+        source="bandcamp", track_ref="1:1", track_name="X", term="ambient",
+        predicted_kinetic_energy=0.7, confidence=0.5,
+    )
+    store.resolve_prediction(p1.id, _vectors(0.4, 0.5))
+
+    other_term_belief = store.get_term_bias("breakbeat")
+    assert other_term_belief.evidence_count == 0
+
+
+def test_get_margin_scale_returns_prior_when_no_data():
+    import tempfile
+    from pathlib import Path
+
+    from epistemic_dj.calibration.store import MARGIN_SCALE_PRIOR_MEAN
+
+    with tempfile.TemporaryDirectory() as d:
+        s = CalibrationStore(db_path=Path(d) / "fresh.db")
+        belief = s.get_margin_scale()
+        assert belief.mean == pytest.approx(MARGIN_SCALE_PRIOR_MEAN)
+        s.close()
+
+
+def test_update_margin_scale_pulls_toward_observed_margins(store):
+    for _ in range(10):
+        store.update_margin_scale(0.08)  # consistently small observed margins
+
+    belief = store.get_margin_scale()
+    # started at 0.5 (the old wrong assumption) -- should be pulled well
+    # below that after repeated small-margin observations
+    assert belief.mean < 0.3

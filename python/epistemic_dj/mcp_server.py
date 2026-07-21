@@ -22,7 +22,11 @@ from epistemic_dj.bandcamp.client import (
     get_track_with_tags,
     managed_client,
 )
-from epistemic_dj.calibration import CalibrationStore
+from epistemic_dj.calibration import (
+    HIT_RATE_BUCKET_STRONG,
+    HIT_RATE_BUCKET_WEAK,
+    CalibrationStore,
+)
 from epistemic_dj.embedding import predicted_kinetic_energy_from_tags, tag_taste_similarity
 from epistemic_dj.models import (
     BrierResult,
@@ -228,11 +232,16 @@ def calibration_predict_from_tags(
     predicted_kinetic_energy: raw cosine-similarity estimate, bias-corrected
     by this term's accumulated Bayesian belief (CalibrationStore.get_term_bias
     -- closed-loop: each resolution's residual updates the belief, correcting
-    future predictions for the same term). confidence: raw anchor margin
-    rescaled against a Bayesian-tracked global margin_scale belief instead of
-    the old hardcoded margin*2 (which assumed a 0-1 margin range that never
-    actually occurs -- see docs/dev/track-calibration-loop.md). Separately
-    computes taste_similarity: cosine similarity between track_tags and
+    future predictions for the same term). confidence: NOT the raw anchor
+    margin -- that measured signal STRENGTH, not P(correct), and was
+    confirmed badly under-confident (real hit rate ~85% vs confidence values
+    clustering 0.05-0.5, see docs/dev/track-calibration-loop.md). Instead,
+    the raw margin only picks a bucket ("weak"/"strong" signal, split at the
+    current margin_scale belief), and confidence is that bucket's own
+    Bayesian hit-rate belief (CalibrationStore.get_hit_rate) -- the actual
+    fraction of that bucket's predictions that have verified so far,
+    closed-loop updated in resolve_prediction. Separately computes
+    taste_similarity: cosine similarity between track_tags and
     taste_target_terms (whatever the onboarding interview/taste profile
     suggests looking for) -- a different question from energy prediction,
     stored but not Brier-scored. If track_tags is empty (no real tag data --
@@ -252,9 +261,8 @@ def calibration_predict_from_tags(
 
     raw_margin = abs(raw_predicted_energy - 0.5)
     margin_scale = _calibration_store.get_margin_scale()
-    confidence = (
-        max(0.0, min(1.0, raw_margin / (2 * margin_scale.mean))) if margin_scale.mean > 0 else 0.0
-    )
+    bucket = HIT_RATE_BUCKET_STRONG if raw_margin >= margin_scale.mean else HIT_RATE_BUCKET_WEAK
+    confidence = _calibration_store.get_hit_rate(bucket).mean
     _calibration_store.update_margin_scale(raw_margin)
 
     similarity = tag_taste_similarity(track_tags, taste_target_terms)
@@ -262,6 +270,7 @@ def calibration_predict_from_tags(
         source=source, track_ref=track_ref, track_name=track_name, term=term,
         predicted_kinetic_energy=predicted_energy, confidence=confidence,
         practitioner_id=practitioner_id, taste_similarity=similarity,
+        confidence_bucket=bucket,
     )
 
 

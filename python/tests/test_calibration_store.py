@@ -171,3 +171,83 @@ def test_update_margin_scale_pulls_toward_observed_margins(store):
     # started at 0.5 (the old wrong assumption) -- should be pulled well
     # below that after repeated small-margin observations
     assert belief.mean < 0.3
+
+
+def test_get_hit_rate_returns_uninformative_prior_for_new_bucket(store):
+    belief = store.get_hit_rate("weak")
+    assert belief.mean == pytest.approx(0.5)
+    assert belief.evidence_count == 0
+
+
+def test_resolve_prediction_updates_hit_rate_for_its_bucket(store):
+    prediction = store.log_prediction(
+        source="bandcamp", track_ref="1:1", track_name="X", term="t",
+        predicted_kinetic_energy=0.6, confidence=0.5, confidence_bucket="strong",
+    )
+    store.resolve_prediction(prediction.id, _vectors(0.65, 0.5))  # within tolerance -> verified
+
+    belief = store.get_hit_rate("strong")
+    assert belief.mean > 0.5  # pulled up from the uninformative prior by a real success
+    assert belief.evidence_count == 1
+
+
+def test_hit_rate_is_scoped_per_bucket(store):
+    prediction = store.log_prediction(
+        source="bandcamp", track_ref="1:1", track_name="X", term="t",
+        predicted_kinetic_energy=0.6, confidence=0.5, confidence_bucket="strong",
+    )
+    store.resolve_prediction(prediction.id, _vectors(0.65, 0.5))
+
+    weak_belief = store.get_hit_rate("weak")
+    assert weak_belief.evidence_count == 0
+
+
+def test_resolve_prediction_skips_hit_rate_update_for_legacy_rows_with_no_bucket(store):
+    # confidence_bucket omitted -- simulates a prediction logged before this
+    # feature existed. Must not crash, and must not silently attribute the
+    # outcome to a bucket it was never assigned to.
+    prediction = store.log_prediction(
+        source="bandcamp", track_ref="1:1", track_name="X", term="t",
+        predicted_kinetic_energy=0.6, confidence=0.5,
+    )
+    store.resolve_prediction(prediction.id, _vectors(0.65, 0.5))
+
+    assert store.get_hit_rate("weak").evidence_count == 0
+    assert store.get_hit_rate("strong").evidence_count == 0
+
+
+def test_confidence_bucket_migration_preserves_existing_rows(tmp_path):
+    # Simulate an old-schema DB (no confidence_bucket column) with real
+    # accumulated data, then confirm reopening via CalibrationStore migrates
+    # in place rather than requiring the db to be deleted/recreated.
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE track_predictions (
+            id TEXT PRIMARY KEY, source TEXT NOT NULL, track_ref TEXT NOT NULL,
+            track_name TEXT NOT NULL, term TEXT NOT NULL,
+            predicted_kinetic_energy REAL NOT NULL, predicted_vectors TEXT,
+            confidence REAL NOT NULL, taste_similarity REAL,
+            practitioner_id TEXT NOT NULL, created_at TEXT NOT NULL,
+            measured_vectors TEXT, verified INTEGER, delta REAL, resolved_at TEXT
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO track_predictions "
+        "(id, source, track_ref, track_name, term, predicted_kinetic_energy, "
+        "confidence, practitioner_id, created_at) "
+        "VALUES ('legacy-1', 'bandcamp', '1:1', 'Old Track', 't', 0.5, 0.5, 'x', '2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = CalibrationStore(db_path=db_path)
+    try:
+        preserved = store.get_prediction("legacy-1")
+        assert preserved.track_name == "Old Track"
+    finally:
+        store.close()

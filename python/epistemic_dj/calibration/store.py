@@ -16,7 +16,14 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from epistemic_dj.calibration.bayesian_belief import DEFAULT_OBSERVATION_VARIANCE, update_belief
+from epistemic_dj.calibration.bayesian_belief import (
+    BETA_PRIOR_ALPHA,
+    BETA_PRIOR_BETA,
+    DEFAULT_OBSERVATION_VARIANCE,
+    beta_belief,
+    beta_update,
+    update_belief,
+)
 from epistemic_dj.models import Belief, BrierResult, MusicVectors, TrackPrediction
 
 DEFAULT_DB_PATH = Path(__file__).parent / "calibration.db"
@@ -33,6 +40,14 @@ TERM_BIAS_PRIOR_VARIANCE = 0.1
 MARGIN_SCALE_PRIOR_MEAN = 0.5
 MARGIN_SCALE_PRIOR_VARIANCE = 0.1
 GLOBAL_BELIEF_KEY = "__global__"
+
+# Confidence hit-rate buckets: "weak"/"strong" signal, split at the current
+# margin_scale.mean (see mcp_server.calibration_predict_from_tags). Each
+# bucket tracks its OWN Beta-Binomial belief -- confidence should reflect
+# how often THIS bucket's predictions actually verify, not an assumption
+# that bigger margin = more accurate.
+HIT_RATE_BUCKET_WEAK = "weak"
+HIT_RATE_BUCKET_STRONG = "strong"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS track_predictions (
@@ -66,6 +81,13 @@ CREATE TABLE IF NOT EXISTS beliefs (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (belief_type, key)
 );
+
+CREATE TABLE IF NOT EXISTS hit_rate_beliefs (
+    bucket TEXT PRIMARY KEY,
+    alpha REAL NOT NULL,
+    beta REAL NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -82,6 +104,16 @@ class CalibrationStore:
         # at single-practitioner volume but no reason not to have it.
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        # Real migration, not a "delete the local db" workaround -- this
+        # store now holds real accumulated prediction history worth
+        # preserving. ALTER TABLE ADD COLUMN is safe on SQLite (existing
+        # rows get NULL, which resolve_prediction treats as "no hit-rate
+        # feedback for this legacy row").
+        existing_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(track_predictions)")
+        }
+        if "confidence_bucket" not in existing_columns:
+            self._conn.execute("ALTER TABLE track_predictions ADD COLUMN confidence_bucket TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -98,6 +130,7 @@ class CalibrationStore:
         practitioner_id: str = "default",
         predicted_vectors: MusicVectors | None = None,
         taste_similarity: float | None = None,
+        confidence_bucket: str | None = None,
     ) -> TrackPrediction:
         prediction = TrackPrediction(
             id=str(uuid.uuid4()),
@@ -115,8 +148,9 @@ class CalibrationStore:
         self._conn.execute(
             "INSERT INTO track_predictions "
             "(id, source, track_ref, track_name, term, predicted_kinetic_energy, "
-            "predicted_vectors, confidence, taste_similarity, practitioner_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "predicted_vectors, confidence, taste_similarity, practitioner_id, created_at, "
+            "confidence_bucket) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 prediction.id, prediction.source, prediction.track_ref,
                 prediction.track_name, prediction.term, prediction.predicted_kinetic_energy,
@@ -124,6 +158,7 @@ class CalibrationStore:
                 if prediction.predicted_vectors else None,
                 prediction.confidence, prediction.taste_similarity,
                 prediction.practitioner_id, prediction.created_at.isoformat(),
+                confidence_bucket,
             ),
         )
         self._conn.commit()
@@ -136,13 +171,14 @@ class CalibrationStore:
         tolerance: float = DEFAULT_TOLERANCE,
     ) -> TrackPrediction:
         row = self._conn.execute(
-            "SELECT predicted_kinetic_energy FROM track_predictions WHERE id = ?",
+            "SELECT predicted_kinetic_energy, term, confidence_bucket "
+            "FROM track_predictions WHERE id = ?",
             (prediction_id,),
         ).fetchone()
         if row is None:
             raise PredictionNotFoundError(prediction_id)
+        predicted_energy, term, confidence_bucket = row
 
-        predicted_energy = row[0]
         measured_energy = measured_vectors.kinetic_energy.value
         delta = abs(predicted_energy - measured_energy)
         verified = delta <= tolerance
@@ -163,10 +199,17 @@ class CalibrationStore:
         # apply_term_bias_correction). Signed (not abs) so direction is
         # preserved -- consistently over- or under-predicting a term should
         # converge the belief toward that bias.
-        term = self._conn.execute(
-            "SELECT term FROM track_predictions WHERE id = ?", (prediction_id,)
-        ).fetchone()[0]
         self._update_belief("term_bias", term, predicted_energy - measured_energy)
+
+        # Closed-loop confidence calibration: this resolution's actual
+        # verified/not outcome becomes evidence for the bucket's hit-rate
+        # belief -- confidence for the NEXT prediction in that bucket
+        # reflects real accuracy, not an assumption. Legacy rows (predicted
+        # before this feature existed) have confidence_bucket=NULL and are
+        # skipped rather than misattributed to a bucket they were never
+        # assigned to.
+        if confidence_bucket is not None:
+            self._update_hit_rate(confidence_bucket, verified)
 
         return self.get_prediction(prediction_id)
 
@@ -236,6 +279,35 @@ class CalibrationStore:
 
     def update_margin_scale(self, raw_margin: float) -> Belief:
         return self._update_belief("margin_scale", GLOBAL_BELIEF_KEY, raw_margin)
+
+    def get_hit_rate(self, bucket: str) -> Belief:
+        """Current belief about P(verified) for predictions in this
+        margin-strength bucket ("weak" | "strong") -- this IS the
+        confidence value calibration_predict_from_tags should report,
+        replacing the old margin*scale rescale that measured signal
+        strength rather than actual accuracy.
+        """
+        row = self._conn.execute(
+            "SELECT alpha, beta FROM hit_rate_beliefs WHERE bucket = ?", (bucket,)
+        ).fetchone()
+        alpha, beta = row if row is not None else (BETA_PRIOR_ALPHA, BETA_PRIOR_BETA)
+        return beta_belief(alpha, beta)
+
+    def _update_hit_rate(self, bucket: str, verified: bool) -> Belief:
+        row = self._conn.execute(
+            "SELECT alpha, beta FROM hit_rate_beliefs WHERE bucket = ?", (bucket,)
+        ).fetchone()
+        alpha, beta = row if row is not None else (BETA_PRIOR_ALPHA, BETA_PRIOR_BETA)
+        new_alpha, new_beta = beta_update(alpha, beta, int(verified))
+        self._conn.execute(
+            "INSERT INTO hit_rate_beliefs (bucket, alpha, beta, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(bucket) DO UPDATE SET "
+            "alpha = excluded.alpha, beta = excluded.beta, updated_at = excluded.updated_at",
+            (bucket, new_alpha, new_beta, datetime.now(UTC).isoformat()),
+        )
+        self._conn.commit()
+        return beta_belief(new_alpha, new_beta)
 
     def get_prediction(self, prediction_id: str) -> TrackPrediction:
         row = self._conn.execute(

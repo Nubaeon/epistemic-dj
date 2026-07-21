@@ -30,3 +30,29 @@ def update_belief(
     return Belief(
         mean=posterior_mean, variance=posterior_variance, evidence_count=evidence_count + 1
     )
+
+
+BETA_PRIOR_ALPHA = 1.0
+BETA_PRIOR_BETA = 1.0
+
+
+def beta_update(alpha: float, beta: float, observation: int) -> tuple[float, float]:
+    """Conjugate Beta-Bernoulli update -- observation is 1 (success) or 0
+    (failure). Used for the confidence hit-rate belief (CalibrationStore):
+    unlike the Gaussian belief above (estimating a continuous quantity),
+    this estimates a PROPORTION -- P(a prediction in this margin-strength
+    bucket turns out verified) -- which is what confidence should actually
+    mean for a Brier-scoreable forecast.
+    """
+    return alpha + observation, beta + (1 - observation)
+
+
+def beta_belief(alpha: float, beta: float) -> Belief:
+    """Present a Beta(alpha, beta) posterior as a Belief. evidence_count is
+    relative to the fixed BETA_PRIOR_ALPHA/BETA_PRIOR_BETA=1.0 uninformative
+    prior (i.e. how many real observations have been folded in since).
+    """
+    mean = alpha / (alpha + beta)
+    variance = (alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1))
+    evidence_count = round(alpha + beta - BETA_PRIOR_ALPHA - BETA_PRIOR_BETA)
+    return Belief(mean=mean, variance=variance, evidence_count=evidence_count)

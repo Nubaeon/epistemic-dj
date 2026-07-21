@@ -40,6 +40,7 @@ from epistemic_dj.models import (
     TrackPrediction,
 )
 from epistemic_dj.taste import TasteStore
+from epistemic_dj.youtube import get_subscribed_artists as youtube_get_subscribed_artists_impl
 from epistemic_dj.youtube import measure_track as youtube_measure_track
 from epistemic_dj.youtube import search as youtube_search
 from epistemic_dj.youtube import search_result_to_track as youtube_search_result_to_track
@@ -199,6 +200,21 @@ def youtube_search_tracks(query: str, limit: int = 10) -> list[Track]:
     """
     results = youtube_search(query, limit=limit)
     return [youtube_search_result_to_track(r) for r in results]
+
+
+@mcp.tool()
+def youtube_get_subscribed_artists(limit: int = 25) -> list[dict]:
+    """Artists the authenticated user is subscribed to on YouTube Music --
+    a real, personally-curated related-artist source, unlike public search
+    (which can only approximate relatedness via shared genre tags).
+
+    Requires one-time setup: YOUTUBE_OAUTH_CLIENT_ID/SECRET env vars (Google
+    Cloud OAuth client, application type "TVs and Limited Input devices",
+    YouTube Data API v3 enabled) plus running
+    `uv run python -m epistemic_dj.youtube.oauth_setup` once interactively
+    -- raises MissingYouTubeOAuthError with setup instructions if not done.
+    """
+    return youtube_get_subscribed_artists_impl(limit=limit)
 
 
 @mcp.tool()

@@ -210,6 +210,50 @@ search + `yt-dlp` extraction, mapping results to the same source-agnostic
 `CalibrationStore` loop are source-agnostic — the loop shouldn't need to
 know which platform a candidate came from beyond the `source` field.
 
+### YouTube OAuth — real subscriptions as a narrow related-artist source
+
+David: "we can copy [Cortex's] pattern" for Google OAuth. Investigated
+first rather than assumed — Cortex's own Google OAuth
+(`empirica-cortex/src/cortex/transport_handlers_oauth.py`) is
+**identity-only login** (`openid email profile` scope, `access_type=online`,
+verifies + discards Google's `id_token`, mints Cortex's own JWT). That does
+NOT transfer here: we need delegated API access (`access_type=offline`,
+YouTube scope, persisted + refreshed Google access/refresh tokens), a
+different mechanic Cortex's flow was never built for.
+
+`ytmusicapi` already implements the full OAuth + auto-refresh flow itself
+(`OAuthCredentials`, `RefreshingToken`) — no need to reimplement token
+storage/refresh. Confirmed via direct read of `ytmusicapi`'s
+`setup.py`/`auth/oauth/{token,credentials}.py`/`constants.py`: it's a
+Device Authorization Grant flow (`grant_type:
+"http://oauth.net/grant_type/device/1.0"` against
+`youtube.com/o/oauth2/device/code`, scope
+`https://www.googleapis.com/auth/youtube`) — the grant type Google
+restricts to the **"TVs and Limited Input devices"** OAuth client
+application type, not "Web application" or "Desktop app".
+
+**One-time human setup** (can't be automated — needs a real browser +
+Google login):
+1. Google Cloud Console: enable **YouTube Data API v3** on the project.
+2. Create OAuth client credentials, application type **"TVs and Limited
+   Input devices"**.
+3. `export YOUTUBE_OAUTH_CLIENT_ID=...` / `YOUTUBE_OAUTH_CLIENT_SECRET=...`
+   (mirrors `BANDCAMP_IDENTITY_TOKEN`'s env-var convention in
+   `bandcamp/client.py`).
+4. `uv run python -m epistemic_dj.youtube.oauth_setup` — prints a URL +
+   code, opens a browser, waits for you to authorize, writes the token to
+   `~/.epistemic-dj/youtube_oauth.json` (outside the repo, gitignore-safe
+   by construction, auto-refreshed by `ytmusicapi` on subsequent calls).
+
+Once set up: `get_subscribed_artists()` / the `youtube_get_subscribed_artists`
+MCP tool return the artists the authenticated user actually follows on
+YouTube Music — a real, personally-curated related-artist signal, unlike
+anything derivable from Bandcamp's public search (see the earlier "narrow
+similarity search" dead-ends: label-tag search returns nothing, generic
+tag search returns too much, compilation per-track attribution collapses
+to the label). Not yet run live — needs David to complete the one-time
+setup above.
+
 ## Phase C — parallel practitioners on the shared store (design-level)
 
 Multiple subagents (or multiple Claude Code sessions) each run the Phase A

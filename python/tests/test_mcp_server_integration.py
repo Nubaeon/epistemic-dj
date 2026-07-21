@@ -55,6 +55,7 @@ async def test_all_expected_tools_are_registered():
         "taste_save_mixtape",
         "audio_analyze_track",
         "youtube_search_tracks",
+        "youtube_get_subscribed_artists",
         "calibration_predict",
         "calibration_predict_from_tags",
         "calibration_resolve",

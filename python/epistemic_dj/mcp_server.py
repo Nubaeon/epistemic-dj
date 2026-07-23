@@ -208,11 +208,10 @@ def youtube_get_subscribed_artists(limit: int = 25) -> list[dict]:
     a real, personally-curated related-artist source, unlike public search
     (which can only approximate relatedness via shared genre tags).
 
-    Requires one-time setup: YOUTUBE_OAUTH_CLIENT_ID/SECRET env vars (Google
-    Cloud OAuth client, application type "TVs and Limited Input devices",
-    YouTube Data API v3 enabled) plus running
-    `uv run python -m epistemic_dj.youtube.oauth_setup` once interactively
-    -- raises MissingYouTubeOAuthError with setup instructions if not done.
+    Requires one-time setup: `uv run python -m epistemic_dj.youtube.auth_setup`
+    run interactively (needs headers copied from a logged-in browser
+    session -- see that module's docstring) -- raises MissingYouTubeAuthError
+    with setup instructions if not done.
     """
     return youtube_get_subscribed_artists_impl(limit=limit)
 

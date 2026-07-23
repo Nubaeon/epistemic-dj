@@ -13,60 +13,50 @@ has no such pacing.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
 import yt_dlp
-from ytmusicapi import OAuthCredentials, YTMusic
+from ytmusicapi import YTMusic
 
 DEFAULT_BITRATE_KBPS = 128  # fallback when yt-dlp doesn't report abr
 RANGE_SAFETY_MARGIN = 1.3  # extra headroom over the raw bitrate math
 
-# OAuth for library-scoped calls (subscriptions, channels) that public
-# search can't reach -- a real, personally-curated related-artist source,
-# unlike anything derivable from public search. Same env-var convention as
-# bandcamp/client.py's BANDCAMP_IDENTITY_TOKEN. Google Cloud OAuth client
-# must be application type "TVs and Limited Input devices" -- confirmed via
-# ytmusicapi's own OAuthCredentials, which hits the device-flow endpoint
-# (grant_type "http://oauth.net/grant_type/device/1.0" against
-# youtube.com/o/oauth2/device/code), a grant type Google restricts to that
-# client type. YouTube Data API v3 must be enabled on the project.
-OAUTH_CLIENT_ID_ENV_VAR = "YOUTUBE_OAUTH_CLIENT_ID"
-OAUTH_CLIENT_SECRET_ENV_VAR = "YOUTUBE_OAUTH_CLIENT_SECRET"
-DEFAULT_OAUTH_TOKEN_PATH = Path.home() / ".epistemic-dj" / "youtube_oauth.json"
+# Auth for library-scoped calls (subscriptions, channels) that public search
+# can't reach -- a real, personally-curated related-artist source, unlike
+# anything derivable from public search. Same file-based convention as
+# bandcamp/client.py's cookie auth, chosen over ytmusicapi's OAuth
+# (setup_oauth()/device flow) -- confirmed live (finding 4228f683) that
+# Google now hard-blocks the OAuth Device Authorization Grant for
+# non-basic scopes (anti "device code phishing" policy), regardless of app
+# verification/test-user status. This is the browser-header/cookie
+# mechanism ytmusicapi itself still supports (see `setup()`/`setup_browser`)
+# -- functionally the same trust model as Bandcamp's identity_token, an
+# interim/dev-scope solution David explicitly signed off on knowing real
+# OAuth (a different flow -- Desktop-app loopback, not device flow) will
+# likely be needed if this ever ships multi-user.
+DEFAULT_HEADERS_PATH = Path.home() / ".epistemic-dj" / "youtube_headers.json"
 
 
-class MissingYouTubeOAuthError(RuntimeError):
+class MissingYouTubeAuthError(RuntimeError):
     pass
 
 
-def _oauth_credentials() -> OAuthCredentials:
-    client_id = os.environ.get(OAUTH_CLIENT_ID_ENV_VAR)
-    client_secret = os.environ.get(OAUTH_CLIENT_SECRET_ENV_VAR)
-    if not client_id or not client_secret:
-        raise MissingYouTubeOAuthError(
-            f"Set {OAUTH_CLIENT_ID_ENV_VAR} and {OAUTH_CLIENT_SECRET_ENV_VAR} to your "
-            "Google Cloud OAuth client credentials (application type 'TVs and Limited "
-            "Input devices', with YouTube Data API v3 enabled)."
-        )
-    return OAuthCredentials(client_id=client_id, client_secret=client_secret)
-
-
-def authenticated_client(token_path: Path | str = DEFAULT_OAUTH_TOKEN_PATH) -> YTMusic:
+def authenticated_client(headers_path: Path | str = DEFAULT_HEADERS_PATH) -> YTMusic:
     """An authenticated YTMusic client for library-scoped calls. Requires a
-    one-time interactive setup (`python -m epistemic_dj.youtube.oauth_setup`)
-    to create the token file at `token_path` -- that step needs a real
-    browser + Google account login, so it can't be run from here. Once
-    created, ytmusicapi auto-refreshes the token on subsequent calls.
+    one-time setup producing the headers file at `headers_path` -- either
+    `python -m epistemic_dj.youtube.auth_setup` run interactively, or
+    `ytmusicapi.auth.browser.setup_browser(filepath=..., headers_raw=...)`
+    called directly with headers already copied from a browser. Either way
+    it's real browser session data, so it can't be created from here.
     """
-    token_path = Path(token_path)
-    if not token_path.exists():
-        raise MissingYouTubeOAuthError(
-            f"No YouTube OAuth token found at {token_path}. Run "
-            "`uv run python -m epistemic_dj.youtube.oauth_setup` once to create it."
+    headers_path = Path(headers_path)
+    if not headers_path.exists():
+        raise MissingYouTubeAuthError(
+            f"No YouTube auth headers found at {headers_path}. Run "
+            "`uv run python -m epistemic_dj.youtube.auth_setup` once to create it."
         )
-    return YTMusic(auth=str(token_path), oauth_credentials=_oauth_credentials())
+    return YTMusic(auth=str(headers_path))
 
 
 def get_subscribed_artists(limit: int = 25) -> list[dict[str, Any]]:

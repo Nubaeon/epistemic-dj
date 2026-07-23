@@ -210,7 +210,7 @@ search + `yt-dlp` extraction, mapping results to the same source-agnostic
 `CalibrationStore` loop are source-agnostic — the loop shouldn't need to
 know which platform a candidate came from beyond the `source` field.
 
-### YouTube OAuth — real subscriptions as a narrow related-artist source
+### YouTube subscriptions as a narrow related-artist source
 
 David: "we can copy [Cortex's] pattern" for Google OAuth. Investigated
 first rather than assumed — Cortex's own Google OAuth
@@ -221,29 +221,41 @@ NOT transfer here: we need delegated API access (`access_type=offline`,
 YouTube scope, persisted + refreshed Google access/refresh tokens), a
 different mechanic Cortex's flow was never built for.
 
-`ytmusicapi` already implements the full OAuth + auto-refresh flow itself
-(`OAuthCredentials`, `RefreshingToken`) — no need to reimplement token
-storage/refresh. Confirmed via direct read of `ytmusicapi`'s
-`setup.py`/`auth/oauth/{token,credentials}.py`/`constants.py`: it's a
-Device Authorization Grant flow (`grant_type:
+**Device-flow OAuth: tried, hit a real Google policy wall.** `ytmusicapi`
+implements OAuth via the Device Authorization Grant (`grant_type:
 "http://oauth.net/grant_type/device/1.0"` against
-`youtube.com/o/oauth2/device/code`, scope
-`https://www.googleapis.com/auth/youtube`) — the grant type Google
-restricts to the **"TVs and Limited Input devices"** OAuth client
-application type, not "Web application" or "Desktop app".
+`youtube.com/o/oauth2/device/code`) — confirmed via direct read of
+`setup.py`/`auth/oauth/{token,credentials}.py`/`constants.py`. Live-tested
+with a real Google Cloud OAuth client and it failed: **`Error 400:
+policy_enforced`**. Confirmed via web research (cross-checked against
+security research on "device code phishing" + a live GitHub issue hitting
+the identical error): Google restricted this grant type for non-basic
+scopes specifically because it's been abused for account-takeover
+phishing. Google Cloud APIs still work through device flow; broader
+personal-data scopes (Workspace-style: Gmail/Drive/Calendar, and
+evidently YouTube's library scope too) don't, regardless of app
+verification or test-user status. Not a fixable misconfiguration — a hard
+policy wall.
 
-**One-time human setup** (can't be automated — needs a real browser +
-Google login):
-1. Google Cloud Console: enable **YouTube Data API v3** on the project.
-2. Create OAuth client credentials, application type **"TVs and Limited
-   Input devices"**.
-3. `export YOUTUBE_OAUTH_CLIENT_ID=...` / `YOUTUBE_OAUTH_CLIENT_SECRET=...`
-   (mirrors `BANDCAMP_IDENTITY_TOKEN`'s env-var convention in
-   `bandcamp/client.py`).
-4. `uv run python -m epistemic_dj.youtube.oauth_setup` — prints a URL +
-   code, opens a browser, waits for you to authorize, writes the token to
-   `~/.epistemic-dj/youtube_oauth.json` (outside the repo, gitignore-safe
-   by construction, auto-refreshed by `ytmusicapi` on subsequent calls).
+**What we use instead: `ytmusicapi`'s browser-header/cookie auth**
+(`ytmusicapi.setup()` / `auth/browser.py::setup_browser`) — the exact same
+trust model already accepted for Bandcamp's `BANDCAMP_IDENTITY_TOKEN`
+(`bandcamp/client.py`): real browser session data, not a formal OAuth
+grant, so Google's device-flow policy doesn't apply. David's explicit
+framing: fine for now (interim/dev-scope), but real OAuth (a *different*
+flow — Desktop-app browser-redirect loopback, not device flow, likely via
+`google-auth-oauthlib` + the YouTube Data API v3 REST endpoint directly)
+is the probable eventual path if this ever ships multi-user, since asking
+every end user to manually copy browser headers doesn't scale as an
+onboarding flow.
+
+**One-time human setup** (can't be automated — needs a real logged-in
+browser session):
+1. `uv run python -m epistemic_dj.youtube.auth_setup` — prompts for raw
+   request headers copied from DevTools on a `music.youtube.com` request
+   (see that module's docstring for exact steps).
+2. Writes `~/.epistemic-dj/youtube_headers.json` (outside the repo,
+   gitignore-safe by construction).
 
 Once set up: `get_subscribed_artists()` / the `youtube_get_subscribed_artists`
 MCP tool return the artists the authenticated user actually follows on

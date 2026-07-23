@@ -1,7 +1,7 @@
 import pytest
 
 from epistemic_dj.youtube.client import (
-    MissingYouTubeOAuthError,
+    MissingYouTubeAuthError,
     authenticated_client,
     bytes_for_duration,
     get_subscribed_artists,
@@ -82,22 +82,26 @@ def test_bytes_for_duration_falls_back_when_no_bitrate_reported():
     assert result > 0
 
 
-def test_authenticated_client_raises_when_token_file_missing(tmp_path, monkeypatch):
-    monkeypatch.setenv("YOUTUBE_OAUTH_CLIENT_ID", "id")
-    monkeypatch.setenv("YOUTUBE_OAUTH_CLIENT_SECRET", "secret")
-
-    with pytest.raises(MissingYouTubeOAuthError, match="oauth_setup"):
-        authenticated_client(token_path=tmp_path / "does-not-exist.json")
+def test_authenticated_client_raises_when_headers_file_missing(tmp_path):
+    with pytest.raises(MissingYouTubeAuthError, match="auth_setup"):
+        authenticated_client(headers_path=tmp_path / "does-not-exist.json")
 
 
-def test_authenticated_client_raises_when_credentials_missing(tmp_path, monkeypatch):
-    monkeypatch.delenv("YOUTUBE_OAUTH_CLIENT_ID", raising=False)
-    monkeypatch.delenv("YOUTUBE_OAUTH_CLIENT_SECRET", raising=False)
-    token_path = tmp_path / "token.json"
-    token_path.write_text("{}")
+def test_authenticated_client_uses_headers_file_when_present(tmp_path, monkeypatch):
+    headers_path = tmp_path / "headers.json"
+    headers_path.write_text("{}")
+    captured = {}
 
-    with pytest.raises(MissingYouTubeOAuthError, match="YOUTUBE_OAUTH_CLIENT_ID"):
-        authenticated_client(token_path=token_path)
+    class FakeYTMusic:
+        def __init__(self, auth=None):
+            captured["auth"] = auth
+
+    monkeypatch.setattr("epistemic_dj.youtube.client.YTMusic", FakeYTMusic)
+
+    client = authenticated_client(headers_path=headers_path)
+
+    assert captured["auth"] == str(headers_path)
+    assert isinstance(client, FakeYTMusic)
 
 
 def test_get_subscribed_artists_delegates_to_authenticated_client(monkeypatch):

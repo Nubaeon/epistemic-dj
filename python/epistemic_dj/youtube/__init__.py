@@ -1,6 +1,6 @@
 from epistemic_dj.youtube.adapter import measure_track, search_result_to_track
 from epistemic_dj.youtube.client import (
-    MissingYouTubeOAuthError,
+    MissingYouTubeAuthError,
     bytes_for_duration,
     get_subscribed_artists,
     resolve_stream,
@@ -8,7 +8,7 @@ from epistemic_dj.youtube.client import (
 )
 
 __all__ = [
-    "MissingYouTubeOAuthError",
+    "MissingYouTubeAuthError",
     "bytes_for_duration",
     "get_subscribed_artists",
     "measure_track",

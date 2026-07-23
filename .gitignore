@@ -1,4 +1,5 @@
 node_modules/
+client_secret_*.json
 .empirica/sessions/
 .empirica_reflex_logs/
 dist/

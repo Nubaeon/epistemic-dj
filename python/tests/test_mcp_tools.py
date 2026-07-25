@@ -195,6 +195,47 @@ def test_calibration_predict_logs_and_returns_prediction():
     assert len(listed) == 1
 
 
+def test_calibration_predict_with_confidence_bucket_overrides_manual_confidence():
+    # Passing confidence=0.99 should be IGNORED -- confidence_bucket wins,
+    # computed from the bucket's real hit-rate belief (uninformative prior
+    # -> 0.5 for a bucket with no evidence yet).
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="abc", track_name="X", term="t",
+        predicted_kinetic_energy=0.7, confidence=0.99,
+        confidence_bucket="manual_energy_cluster",
+    )
+
+    assert prediction.confidence == pytest.approx(0.5)
+
+
+def test_calibration_predict_without_bucket_uses_manual_confidence():
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="abc", track_name="X", term="t",
+        predicted_kinetic_energy=0.7, confidence=0.6,
+    )
+
+    assert prediction.confidence == pytest.approx(0.6)
+
+
+def test_calibration_resolve_updates_hit_rate_for_manual_bucket():
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="abc", track_name="X", term="t",
+        predicted_kinetic_energy=0.6, confidence=0.99,
+        confidence_bucket="manual_energy_cluster",
+    )
+
+    from epistemic_dj.models import EstimatedValue, MusicVectors
+
+    vectors = MusicVectors(
+        kinetic_energy=EstimatedValue(value=0.65), cognitive_load=EstimatedValue(value=0.5)
+    )
+    server._calibration_store.resolve_prediction(prediction.id, vectors)  # within tolerance
+
+    belief = server._calibration_store.get_hit_rate("manual_energy_cluster")
+    assert belief.evidence_count == 1
+    assert belief.mean > 0.5  # pulled up from the uninformative prior by a real success
+
+
 async def test_calibration_resolve_dispatches_bandcamp_measurement(monkeypatch):
     prediction = server.calibration_predict(
         source="bandcamp", track_ref="1:2", track_name="X", term="t",

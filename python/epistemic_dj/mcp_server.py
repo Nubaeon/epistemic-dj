@@ -313,6 +313,7 @@ def calibration_predict(
     predicted_kinetic_energy: float,
     confidence: float,
     practitioner_id: str = "default",
+    confidence_bucket: str | None = None,
 ) -> TrackPrediction:
     """Manual judgment-call prediction path -- fallback for when real tag
     data doesn't exist (e.g. YouTube, which has no artist-tag equivalent to
@@ -322,14 +323,28 @@ def calibration_predict(
     source must be 'bandcamp' or 'youtube'. track_ref: for bandcamp,
     'artist_id:track_id' (matching audio_analyze_track's args); for
     youtube, the video id (matching youtube_search_tracks' Track.id).
-    predicted_kinetic_energy and confidence must be a genuine judgment call,
-    not a default value. Call calibration_resolve next to measure the real
-    audio and see whether the prediction holds up.
+    predicted_kinetic_energy must ALWAYS be a genuine, individually-reasoned
+    judgment call about THIS track -- never derived from a lookup table or
+    string-matched category (that's just a heuristic algorithm wearing an
+    AI-shaped costume, not the holistic judgment this path exists for).
+
+    confidence_bucket: optional. When set, `confidence` is IGNORED and
+    instead computed from this bucket's real Bayesian hit-rate belief
+    (CalibrationStore.get_hit_rate) -- the same closed-loop mechanism
+    calibration_predict_from_tags uses for margin-strength buckets, applied
+    here to whatever repeatable classification of judgment call this is
+    (e.g. 'manual_energy_cluster', 'manual_underlay'). This is a distinct
+    question from predicted_kinetic_energy: it's "how reliable has this
+    KIND of call been," not a substitute for reasoning about the track
+    itself. Omit for a one-off call with no natural repeatable category --
+    confidence is then whatever you genuinely believe.
     """
+    if confidence_bucket is not None:
+        confidence = _calibration_store.get_hit_rate(confidence_bucket).mean
     return _calibration_store.log_prediction(
         source=source, track_ref=track_ref, track_name=track_name, term=term,
         predicted_kinetic_energy=predicted_kinetic_energy, confidence=confidence,
-        practitioner_id=practitioner_id,
+        practitioner_id=practitioner_id, confidence_bucket=confidence_bucket,
     )
 
 

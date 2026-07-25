@@ -63,6 +63,11 @@ def get_subscribed_artists(limit: int = 25) -> list[dict[str, Any]]:
     """Artists the authenticated user has subscribed to on YouTube Music --
     a real, personally-curated related-artist source (unlike public search,
     which can only approximate relatedness via shared genre tags).
+
+    Confirmed live (2026-07) noisier than expected -- subscriptions mix in
+    channels followed for unrelated reasons. get_playlist_tracks() against
+    an actual curated playlist is the stronger signal; see
+    docs/dev/track-calibration-loop.md.
     """
     return cast(
         "list[dict[str, Any]]", authenticated_client().get_library_subscriptions(limit=limit)
@@ -74,6 +79,27 @@ class YouTubeSearchResult(TypedDict):
     title: str
     artists: list[str]
     duration_seconds: int | None
+
+
+def get_playlist_tracks(playlist_id: str, limit: int | None = None) -> list[YouTubeSearchResult]:
+    """Real tracks from a user's own curated playlist -- the canonical
+    entry point for building an epistemic knowledge graph (David,
+    2026-07-25): an existing playlist becomes the seed corpus for the
+    predict(metadata)->resolve(audio) loop, rather than search-derived
+    candidates. Same shape as search() results, so search_result_to_track
+    and the rest of the calibration pipeline need no changes.
+    """
+    playlist = authenticated_client().get_playlist(playlist_id, limit=limit)
+    return [
+        {
+            "video_id": t["videoId"],
+            "title": t["title"],
+            "artists": [a.get("name", "") for a in t.get("artists", []) or []],
+            "duration_seconds": t.get("duration_seconds"),
+        }
+        for t in playlist.get("tracks", [])
+        if t.get("videoId")
+    ]
 
 
 def search(query: str, limit: int = 20) -> list[YouTubeSearchResult]:

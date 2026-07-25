@@ -40,6 +40,7 @@ from epistemic_dj.models import (
     TrackPrediction,
 )
 from epistemic_dj.taste import TasteStore
+from epistemic_dj.youtube import get_playlist_tracks as youtube_get_playlist_tracks_impl
 from epistemic_dj.youtube import get_subscribed_artists as youtube_get_subscribed_artists_impl
 from epistemic_dj.youtube import measure_track as youtube_measure_track
 from epistemic_dj.youtube import search as youtube_search
@@ -214,6 +215,20 @@ def youtube_get_subscribed_artists(limit: int = 25) -> list[dict]:
     with setup instructions if not done.
     """
     return youtube_get_subscribed_artists_impl(limit=limit)
+
+
+@mcp.tool()
+def youtube_get_playlist_tracks(playlist_id: str, limit: int | None = None) -> list[Track]:
+    """Real tracks from a user's own curated playlist -- the canonical
+    entry point for building an epistemic knowledge graph (David,
+    2026-07-25): an existing playlist becomes the seed corpus for the
+    predict(metadata)->resolve(audio) loop, stronger than search-derived
+    or subscription-derived candidates since it's what the user actually
+    chose to keep. playlist_id is the bare id (e.g. 'PLS7akZZtkCGY'), not
+    a full URL. Same auth requirement as youtube_get_subscribed_artists.
+    """
+    results = youtube_get_playlist_tracks_impl(playlist_id, limit=limit)
+    return [youtube_search_result_to_track(r) for r in results]
 
 
 @mcp.tool()

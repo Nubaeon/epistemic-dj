@@ -4,6 +4,7 @@ from epistemic_dj.youtube.client import (
     MissingYouTubeAuthError,
     authenticated_client,
     bytes_for_duration,
+    get_playlist_tracks,
     get_subscribed_artists,
     resolve_stream,
     search,
@@ -116,3 +117,38 @@ def test_get_subscribed_artists_delegates_to_authenticated_client(monkeypatch):
     result = get_subscribed_artists(limit=10)
 
     assert result == [{"artist": "Krafty Kuts"}]
+
+
+def test_get_playlist_tracks_maps_ytmusicapi_shape(monkeypatch):
+    raw_playlist = {
+        "title": "Breaks, Beats, Soul Funk Mashups",
+        "trackCount": 2,
+        "tracks": [
+            {
+                "videoId": "abc123",
+                "title": "Turn It Up",
+                "artists": [{"name": "A. Skillz", "id": "x"}],
+                "duration_seconds": 210,
+            },
+            {"videoId": None, "title": "No id -- should be filtered"},
+        ],
+    }
+
+    class FakeYTMusic:
+        def get_playlist(self, playlist_id, limit=None):
+            assert playlist_id == "PLS7akZZtkCGY"
+            return raw_playlist
+
+    monkeypatch.setattr(
+        "epistemic_dj.youtube.client.authenticated_client", lambda: FakeYTMusic()
+    )
+
+    results = get_playlist_tracks("PLS7akZZtkCGY")
+
+    assert len(results) == 1
+    assert results[0] == {
+        "video_id": "abc123",
+        "title": "Turn It Up",
+        "artists": ["A. Skillz"],
+        "duration_seconds": 210,
+    }

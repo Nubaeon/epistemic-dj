@@ -353,6 +353,40 @@ class CalibrationStore:
         rows = self._conn.execute(query, params).fetchall()
         return [_row_to_prediction(r) for r in rows]
 
+    def delete_unresolved_predictions(
+        self,
+        source: str | None = None,
+        term: str | None = None,
+        confidence_bucket_is_null: bool = False,
+    ) -> int:
+        """Delete stale unresolved predictions -- e.g. orphans left by an
+        interrupted batch script (confirmed real occurrence twice this
+        session: a killed Bash timeout, then an accidental script import
+        that ran the full batch). Always scoped to resolved_at IS NULL --
+        never touches resolved predictions, which are real historical data
+        regardless of how the confidence was originally computed.
+        confidence_bucket_is_null narrows to predictions logged before the
+        confidence_bucket feature existed (or via calibration_predict
+        without a bucket) -- useful for clearing a specific rejected
+        approach's orphans without touching genuine unresolved predictions
+        from a newer approach that simply failed to resolve (e.g. a
+        transient download failure) and are worth retrying.
+        """
+        clauses = ["resolved_at IS NULL"]
+        params: list[str] = []
+        if source is not None:
+            clauses.append("source = ?")
+            params.append(source)
+        if term is not None:
+            clauses.append("term = ?")
+            params.append(term)
+        if confidence_bucket_is_null:
+            clauses.append("confidence_bucket IS NULL")
+        query = "DELETE FROM track_predictions WHERE " + " AND ".join(clauses)
+        cursor = self._conn.execute(query, params)
+        self._conn.commit()
+        return cursor.rowcount
+
     def brier_score(
         self,
         term_prefix: str | None = None,

@@ -251,3 +251,40 @@ def test_confidence_bucket_migration_preserves_existing_rows(tmp_path):
         assert preserved.track_name == "Old Track"
     finally:
         store.close()
+
+
+def test_delete_unresolved_predictions_never_touches_resolved(store):
+    resolved = store.log_prediction(
+        source="youtube", track_ref="r1", track_name="Resolved", term="t",
+        predicted_kinetic_energy=0.6, confidence=0.5,
+    )
+    store.resolve_prediction(resolved.id, _vectors(0.6, 0.5))
+    orphan = store.log_prediction(
+        source="youtube", track_ref="o1", track_name="Orphan", term="t",
+        predicted_kinetic_energy=0.6, confidence=0.5,
+    )
+
+    deleted = store.delete_unresolved_predictions(source="youtube")
+
+    assert deleted == 1
+    assert store.get_prediction(resolved.id).track_name == "Resolved"
+    with pytest.raises(PredictionNotFoundError):
+        store.get_prediction(orphan.id)
+
+
+def test_delete_unresolved_predictions_confidence_bucket_is_null_scopes_correctly(store):
+    heuristic_orphan = store.log_prediction(
+        source="youtube", track_ref="h1", track_name="Heuristic Orphan", term="t",
+        predicted_kinetic_energy=0.6, confidence=0.5,
+    )  # no confidence_bucket -- simulates the rejected heuristic approach
+    genuine_pending = store.log_prediction(
+        source="youtube", track_ref="g1", track_name="Genuine Pending", term="t",
+        predicted_kinetic_energy=0.6, confidence=0.5, confidence_bucket="manual_strong_basis",
+    )  # has a real bucket -- a genuine prediction that just hasn't resolved yet
+
+    deleted = store.delete_unresolved_predictions(source="youtube", confidence_bucket_is_null=True)
+
+    assert deleted == 1
+    with pytest.raises(PredictionNotFoundError):
+        store.get_prediction(heuristic_orphan.id)
+    assert store.get_prediction(genuine_pending.id).track_name == "Genuine Pending"

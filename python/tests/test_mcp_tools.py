@@ -125,7 +125,7 @@ async def test_audio_analyze_track_fetches_streaming_url_and_maps_vectors(monkey
 
     assert result["features"]["aggregated"]["tempo_bpm"] == 140.0
     assert result["vectors"]["kinetic_energy"] is not None
-    assert result["vectors"]["valence"] is None
+    assert result["vectors"]["valence"] is not None
 
 
 async def test_audio_analyze_track_raises_when_not_streamable(monkeypatch):

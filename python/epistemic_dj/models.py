@@ -77,11 +77,18 @@ class MusicVectors(BaseModel):
         "Still heuristic-derived (no external ground truth for this construct yet) -- "
         "uncertainty reflects within-track sample variance only, no model/grounding term."
     )
-    valence: Scalar | None = Field(
+    valence: EstimatedValue | None = Field(
         default=None,
-        description="Emotional brightness/darkness. NOT derivable from tempo/energy/"
-        "spectral-centroid alone -- needs real key/mode (major vs. minor) detection via "
-        "chroma/tonal analysis, not built yet. None rather than a guessed value.",
+        description="Emotional brightness/darkness. Value comes from a linear regression fit "
+        "against DEAM's human-rated valence annotations, same features/pipeline as "
+        "kinetic_energy (see audio/mapping.py and scripts/fit_valence_regression.py) -- "
+        "NOT a hand-picked formula, but honestly weaker fit quality (test R2~0.27) than "
+        "kinetic_energy's, since these tempo/energy/spectral features were tuned for arousal, "
+        "not valence's stronger real correlates (key/mode, harmonic content -- not built yet). "
+        "uncertainty combines within-track sample variance with the regression's residual RMSE. "
+        "Aggregate only -- no per-window trajectory/arc detection (e.g. distinguishing "
+        "'uplift from dark energy' from 'monotonous dark') yet; that needs real per-window "
+        "values wired through, deferred.",
     )
     vocal_density: Scalar | None = Field(
         default=None,

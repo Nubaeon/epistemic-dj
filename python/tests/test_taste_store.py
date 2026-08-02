@@ -23,8 +23,8 @@ def test_log_and_get_finding(store):
 
 def test_log_and_get_pattern_with_vectors(store):
     vectors = MusicVectors(
-        kinetic_energy=EstimatedValue(value=0.6), valence=0.5, vocal_density=0.1,
-        structural_repetition=0.9, cognitive_load=EstimatedValue(value=0.2),
+        kinetic_energy=EstimatedValue(value=0.6), valence=EstimatedValue(value=0.5),
+        vocal_density=0.1, structural_repetition=0.9, cognitive_load=EstimatedValue(value=0.2),
     )
     pattern = store.log_pattern(
         "david", "prefers repetitive instrumental tracks while working",
@@ -32,6 +32,7 @@ def test_log_and_get_pattern_with_vectors(store):
     )
     assert pattern.confidence == 0.8
     assert pattern.vectors.kinetic_energy.value == 0.6
+    assert pattern.vectors.valence.value == 0.5
 
     patterns = store.get_patterns("david")
     assert len(patterns) == 1

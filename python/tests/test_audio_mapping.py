@@ -72,6 +72,7 @@ def test_all_vectors_clamped_to_unit_range_even_with_extreme_inputs():
 
     for estimated in (
         vectors.kinetic_energy,
+        vectors.valence,
         vectors.cognitive_load,
         vectors.groove_consistency,
         vectors.textural_density,
@@ -83,7 +84,6 @@ def test_all_vectors_clamped_to_unit_range_even_with_extreme_inputs():
 def test_undeterminable_vectors_stay_none_not_fabricated():
     vectors = audio_features_to_vectors(_sampled())
 
-    assert vectors.valence is None
     assert vectors.vocal_density is None
     assert vectors.structural_repetition is None
     assert vectors.novelty is None
@@ -98,6 +98,25 @@ def test_kinetic_energy_carries_model_uncertainty_even_with_one_sample():
     # residual RMSE still applies -- uncertainty must not be None.
     assert vectors.kinetic_energy.uncertainty is not None
     assert vectors.kinetic_energy.uncertainty > 0.0
+
+
+def test_valence_carries_model_uncertainty_even_with_one_sample():
+    vectors = audio_features_to_vectors(_sampled())
+    assert vectors.valence is not None
+    assert vectors.valence.uncertainty is not None
+    assert vectors.valence.uncertainty > 0.0
+
+
+def test_darker_track_scores_lower_valence():
+    # Same DEAM-fit direction: lower energy/brightness features -> lower
+    # predicted valence, per the (weak but real, test R2~0.27) regression.
+    bright = _sampled(dict(rms_energy=0.25, spectral_centroid_hz=3500.0, spectral_bandwidth_hz=3500.0))
+    dark = _sampled(dict(rms_energy=0.02, spectral_centroid_hz=800.0, spectral_bandwidth_hz=800.0))
+
+    bright_valence = audio_features_to_vectors(bright).valence
+    dark_valence = audio_features_to_vectors(dark).valence
+    assert bright_valence is not None and dark_valence is not None
+    assert bright_valence.value > dark_valence.value
 
 
 def test_cognitive_load_uncertainty_is_none_with_one_sample_no_model():

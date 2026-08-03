@@ -1,5 +1,19 @@
 # 🎧 Epistemic DJ
 
+**TL;DR:** Most music tools are one of two things — an app that just plays
+you stuff (Spotify), or a full production studio you need years to learn
+(a DAW). Nothing in between for people who want to *shape* their
+listening without becoming a producer. epistemic-dj is that middle
+ground: it learns what you actually like — not by watching what you
+skip, but by asking you and by really listening to your tracks — and
+keeps a record of *why*, so "why did you play me this" has a real
+answer instead of a shrug. With that, it can find you more of what
+you'd genuinely want, and build actual mashups: match the tempo, line
+up the beats, even pull the vocals off one track and lay them over
+another track's instrumental. Every step is checked against the real
+audio, never a genre-tag guess standing in for actually listening. Full
+story: [`docs/human/overview.md`](docs/human/overview.md).
+
 > **Status: alpha, developers only.** This is a working local MCP server you
 > run from source and drive via Claude — not a packaged app, no installer,
 > no stability guarantees between commits. Expect rough edges. See

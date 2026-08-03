@@ -123,15 +123,21 @@ class CalibrationStore:
         # preserves their values exactly; DEFAULT 'kinetic_energy' backfills
         # quantity for them. Safe: this is a single-practitioner local
         # SQLite file, not a shared/prod migration.
-        if "predicted_kinetic_energy" in existing_columns and "predicted_value" not in existing_columns:
+        has_old_predicted_col = (
+            "predicted_kinetic_energy" in existing_columns
+            and "predicted_value" not in existing_columns
+        )
+        if has_old_predicted_col:
             self._conn.execute(
-                "ALTER TABLE track_predictions RENAME COLUMN predicted_kinetic_energy TO predicted_value"
+                "ALTER TABLE track_predictions "
+                "RENAME COLUMN predicted_kinetic_energy TO predicted_value"
             )
             existing_columns.discard("predicted_kinetic_energy")
             existing_columns.add("predicted_value")
         if "quantity" not in existing_columns:
             self._conn.execute(
-                "ALTER TABLE track_predictions ADD COLUMN quantity TEXT NOT NULL DEFAULT 'kinetic_energy'"
+                "ALTER TABLE track_predictions "
+                "ADD COLUMN quantity TEXT NOT NULL DEFAULT 'kinetic_energy'"
             )
             existing_columns.add("quantity")
         if "measured_value" not in existing_columns:
@@ -144,7 +150,9 @@ class CalibrationStore:
                 "json_extract(measured_vectors, '$.kinetic_energy.value') "
                 "WHERE measured_vectors IS NOT NULL AND measured_value IS NULL"
             )
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_quantity ON track_predictions(quantity)")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_predictions_quantity ON track_predictions(quantity)"
+        )
         self._conn.commit()
 
     def close(self) -> None:
@@ -223,9 +231,10 @@ class CalibrationStore:
             raise PredictionNotFoundError(prediction_id)
         predicted_value, term, confidence_bucket, quantity = row
 
-        resolved_measured_value = (
-            measured_vectors.kinetic_energy.value if measured_vectors is not None else measured_value
-        )
+        if measured_vectors is not None:
+            resolved_measured_value = measured_vectors.kinetic_energy.value
+        else:
+            resolved_measured_value = measured_value
         delta = abs(predicted_value - resolved_measured_value)
         verified = delta <= tolerance
         resolved_at = datetime.now(UTC)

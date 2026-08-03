@@ -340,7 +340,8 @@ def test_brier_score_filters_by_quantity(store):
     assert store.brier_score(quantity="kinetic_energy").n == 1
     assert store.brier_score(quantity="kinetic_energy").brier_score == pytest.approx(0.0)
     assert store.brier_score(quantity="tempo_bpm").n == 1
-    assert store.brier_score(quantity="tempo_bpm").brier_score == pytest.approx(0.0)  # conf=0, refuted
+    # conf=0, refuted
+    assert store.brier_score(quantity="tempo_bpm").brier_score == pytest.approx(0.0)
     assert store.brier_score().n == 2
 
 

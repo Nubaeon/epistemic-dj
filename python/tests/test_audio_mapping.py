@@ -110,7 +110,9 @@ def test_valence_carries_model_uncertainty_even_with_one_sample():
 def test_darker_track_scores_lower_valence():
     # Same DEAM-fit direction: lower energy/brightness features -> lower
     # predicted valence, per the (weak but real, test R2~0.27) regression.
-    bright = _sampled(dict(rms_energy=0.25, spectral_centroid_hz=3500.0, spectral_bandwidth_hz=3500.0))
+    bright = _sampled(
+        dict(rms_energy=0.25, spectral_centroid_hz=3500.0, spectral_bandwidth_hz=3500.0)
+    )
     dark = _sampled(dict(rms_energy=0.02, spectral_centroid_hz=800.0, spectral_bandwidth_hz=800.0))
 
     bright_valence = audio_features_to_vectors(bright).valence

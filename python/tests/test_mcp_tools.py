@@ -333,6 +333,81 @@ async def test_calibration_predict_tempo_bandcamp_path_uses_excerpt_duration(mon
     assert seen_durations == [server.CHEAP_TEMPO_EXCERPT_DURATION]
 
 
+async def test_tempo_compatibility_pct_octave_normalizes():
+    from epistemic_dj.mcp_server import _tempo_compatibility_pct
+
+    # Exact match -> 0%
+    assert _tempo_compatibility_pct(128.0, 128.0) == pytest.approx(0.0)
+    # Double-time equivalence: 174 vs 87 should read as compatible (~0%),
+    # NOT a naive |174-87|/174 ~= 50% miss.
+    assert _tempo_compatibility_pct(174.0, 87.0) == pytest.approx(0.0, abs=0.5)
+    # Genuinely incompatible tempos (no octave rescue) stay a large percentage.
+    assert _tempo_compatibility_pct(100.0, 137.0) > 20.0
+
+
+async def test_calibration_predict_tempo_compatibility_measures_both_tracks(monkeypatch):
+    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
+
+    bpm_by_video = {"vidA": 128.0, "vidB": 132.0}
+
+    async def fake_measure_track(video_id, *, max_duration=60.0):
+        features = AudioFeatures(
+            tempo_bpm=bpm_by_video[video_id], rms_energy=0.15, spectral_centroid_hz=2000.0,
+            onset_density_per_sec=4.0, duration_analyzed_sec=max_duration,
+            beat_interval_cv=0.05, spectral_bandwidth_hz=2000.0,
+        )
+        return SampledAudioFeatures(aggregated=features, samples=[features])
+
+    monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
+
+    prediction = await server.calibration_predict_tempo_compatibility(
+        source="youtube", track_ref_a="vidA", track_ref_b="vidB",
+        track_name="A vs B", term="pair_x",
+    )
+
+    assert prediction.quantity == "tempo_compatibility_pct"
+    assert prediction.track_ref == "vidA::vidB"
+    # |128-132|/128 * 100
+    assert prediction.predicted_value == pytest.approx(3.125, abs=0.01)
+
+
+async def test_calibration_resolve_tempo_compatibility_uses_fuller_analysis(monkeypatch):
+    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
+
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="vidA::vidB", track_name="A vs B", term="pair_x",
+        predicted_value=3.0, confidence=0.5, quantity="tempo_compatibility_pct",
+    )
+
+    bpm_by_video = {"vidA": 130.0, "vidB": 130.0}  # fuller analysis says exact match now
+
+    async def fake_measure_track(video_id, *, max_duration=60.0):
+        features = AudioFeatures(
+            tempo_bpm=bpm_by_video[video_id], rms_energy=0.15, spectral_centroid_hz=2000.0,
+            onset_density_per_sec=4.0, duration_analyzed_sec=max_duration,
+            beat_interval_cv=0.05, spectral_bandwidth_hz=2000.0,
+        )
+        return SampledAudioFeatures(aggregated=features, samples=[features])
+
+    monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
+
+    resolved = await server.calibration_resolve_tempo_compatibility(
+        prediction.id, max_duration=45.0
+    )
+
+    assert resolved.measured_value == pytest.approx(0.0)
+    assert resolved.verified is True  # |3.0 - 0.0| = 3.0 <= TEMPO_COMPATIBILITY_TOLERANCE_PCT
+
+
+async def test_calibration_resolve_tempo_compatibility_rejects_wrong_quantity():
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="vidA", track_name="A", term="t",
+        predicted_value=0.6, confidence=0.5,
+    )
+    with pytest.raises(ValueError, match="tempo_compatibility_pct"):
+        await server.calibration_resolve_tempo_compatibility(prediction.id)
+
+
 async def test_calibration_resolve_dispatches_tempo_quantity_via_youtube(monkeypatch):
     prediction = server.calibration_predict(
         source="youtube", track_ref="videoid456", track_name="Y", term="t",

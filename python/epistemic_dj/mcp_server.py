@@ -460,6 +460,102 @@ async def calibration_resolve(prediction_id: str, max_duration: float = 45.0) ->
     return _calibration_store.resolve_prediction(prediction_id, vectors)
 
 
+TEMPO_COMPATIBILITY_TOLERANCE_PCT = 3.0
+# Octave-equivalence candidates for beatmatching (standard DJ practice: a
+# track can be mixed against another at 1x, half-time, or double-time).
+# +-6-8% pitch-stretch without audible artifacts is also standard practice
+# -- both facts are domain knowledge applied here, not verified this
+# session (empirica assumption f68d4787).
+_TEMPO_OCTAVE_RATIOS = (1.0, 2.0, 0.5)
+
+
+def _tempo_compatibility_pct(bpm_a: float, bpm_b: float) -> float:
+    """Smallest percent-difference between bpm_a and bpm_b across the
+    standard octave-equivalence candidates (1x/2x/0.5x) -- NOT a raw
+    difference, since a 174 BPM and an 87 BPM track ARE beatmatchable
+    (half-time mixing), a naive |174-87|/174 would call them incompatible.
+    """
+    return min(abs(bpm_a - ratio * bpm_b) / bpm_a * 100.0 for ratio in _TEMPO_OCTAVE_RATIOS)
+
+
+async def _measure_tempo_bpm(source: str, track_ref: str, max_duration: float) -> float:
+    if source == "bandcamp":
+        artist_id_str, track_id_str = track_ref.split(":")
+        result = await audio_analyze_track(
+            artist_id=int(artist_id_str), track_id=int(track_id_str), max_duration=max_duration
+        )
+        return result["features"]["aggregated"]["tempo_bpm"]
+    if source == "youtube":
+        features = await youtube_measure_track(track_ref, max_duration=max_duration)
+        return features.aggregated.tempo_bpm
+    raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
+
+
+@mcp.tool()
+async def calibration_predict_tempo_compatibility(
+    source: str,
+    track_ref_a: str,
+    track_ref_b: str,
+    track_name: str,
+    term: str,
+    practitioner_id: str = "default",
+    confidence_bucket: str | None = "tempo_compatibility_short_excerpt",
+    excerpt_duration: float = CHEAP_TEMPO_EXCERPT_DURATION,
+) -> TrackPrediction:
+    """Phase 2 of the mixing-engine roadmap: pairwise tempo-feasibility,
+    predicted from real (cheap-excerpt) audio on BOTH tracks -- never from
+    titles/tags (same discipline as calibration_predict_tempo). Key/mode
+    compatibility is explicitly out of scope here (needs empirica goal
+    9a40ff1f's key detection, not built yet) -- this is tempo-feasibility
+    only.
+
+    predicted_value is the octave-normalized percent-difference between the
+    two tracks' short-excerpt tempos (see _tempo_compatibility_pct) --
+    lower means more mixable. quantity='tempo_compatibility_pct'.
+    track_ref is stored as 'track_ref_a::track_ref_b' so calibration_resolve
+    can't accidentally dispatch this as a single-track prediction (its
+    source-specific split logic would choke on the composite ref) --
+    resolve this one via calibration_resolve_tempo_compatibility instead.
+    """
+    bpm_a = await _measure_tempo_bpm(source, track_ref_a, excerpt_duration)
+    bpm_b = await _measure_tempo_bpm(source, track_ref_b, excerpt_duration)
+    predicted_pct = _tempo_compatibility_pct(bpm_a, bpm_b)
+
+    confidence = (
+        _calibration_store.get_hit_rate(confidence_bucket).mean if confidence_bucket else 0.5
+    )
+    return _calibration_store.log_prediction(
+        source=source, track_ref=f"{track_ref_a}::{track_ref_b}", track_name=track_name, term=term,
+        predicted_value=predicted_pct, confidence=confidence,
+        practitioner_id=practitioner_id, confidence_bucket=confidence_bucket,
+        quantity="tempo_compatibility_pct",
+    )
+
+
+@mcp.tool()
+async def calibration_resolve_tempo_compatibility(
+    prediction_id: str, max_duration: float = 45.0
+) -> TrackPrediction:
+    """Resolves a calibration_predict_tempo_compatibility prediction against
+    the same octave-normalized percent-difference computed from FULLER
+    (default 45s) audio on both tracks -- the more expensive, more reliable
+    reading, same tiering as calibration_resolve's tempo_bpm path.
+    """
+    prediction = _calibration_store.get_prediction(prediction_id)
+    if prediction.quantity != "tempo_compatibility_pct":
+        raise ValueError(
+            f"Prediction {prediction_id} has quantity={prediction.quantity!r}, "
+            "not 'tempo_compatibility_pct' -- use calibration_resolve instead."
+        )
+    track_ref_a, track_ref_b = prediction.track_ref.split("::")
+    bpm_a = await _measure_tempo_bpm(prediction.source, track_ref_a, max_duration)
+    bpm_b = await _measure_tempo_bpm(prediction.source, track_ref_b, max_duration)
+    measured_pct = _tempo_compatibility_pct(bpm_a, bpm_b)
+    return _calibration_store.resolve_prediction(
+        prediction_id, measured_value=measured_pct, tolerance=TEMPO_COMPATIBILITY_TOLERANCE_PCT
+    )
+
+
 @mcp.tool()
 def calibration_brier(
     term_prefix: str | None = None,

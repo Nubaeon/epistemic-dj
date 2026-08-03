@@ -765,9 +765,10 @@ async def render_mashup(
     output_name: str,
     render_duration: float = 30.0,
     offset_sec: float = RENDER_WINDOW_OFFSET_SEC,
+    auto_align: bool = True,
 ) -> dict:
-    """Phase 3 of the mixing-engine roadmap: the first real render. Downloads
-    a contiguous window (default 30s, starting at offset_sec to skip a
+    """Phase 3 of the mixing-engine roadmap: real renders. Downloads a
+    contiguous window (default 30s, starting at offset_sec to skip a
     slow/quiet intro -- same convention as sample_track's min_offset) from
     BOTH tracks, time-stretches track B to track A's real measured tempo
     (audio-grounded via the multi-checkpoint pipeline -- never a guess),
@@ -779,39 +780,56 @@ async def render_mashup(
     to match. Both must share `source` (bandcamp or youtube) -- cross-source
     mashups aren't wired yet. Output written to epistemic-dj/renders/.
 
-    This does NOT yet close a predict/measure/resolve calibration loop for
-    alignment quality (that's the natural next increment) -- this call
-    proves the render mechanism itself works end-to-end on real audio.
+    auto_align (default True): the first real render (empirica finding
+    85e654a5) showed naive same-offset overlay can land two DIFFERENT
+    tracks badly out of phase -- there's no reason two arbitrary tracks'
+    downbeats coincide just because download started at the same wall-clock
+    offset. When True, after the naive render this uses its own
+    best_lag_sec signal to re-download track B at a corrected offset and
+    render a SECOND version -- writes BOTH '{output_name}_naive.wav' and
+    '{output_name}_aligned.wav' so the difference is A/B-listenable, not
+    just a number. Whether the correction actually sounds better is for a
+    human to judge (David, 2026-08-03: 'only checking the actual track
+    itself will lead to correct hits') -- this reports both scores
+    honestly, it does not claim the aligned version is definitively better.
     """
     tempo_checkpoints_a = await _measure_tempo_checkpoints(source, track_ref_a, 45.0)
     tempo_checkpoints_b = await _measure_tempo_checkpoints(source, track_ref_b, 45.0)
     bpm_a = _tempo_point_estimate(tempo_checkpoints_a, track_ref=track_ref_a)
     bpm_b = _tempo_point_estimate(tempo_checkpoints_b, track_ref=track_ref_b)
+    stretch_rate = bpm_a / bpm_b
 
     y_a, sr_a = await _download_audio_window(
         source, track_ref_a, offset_sec=offset_sec, duration=render_duration
     )
-    y_b, sr_b = await _download_audio_window(
-        source, track_ref_b, offset_sec=offset_sec, duration=render_duration
-    )
-    if sr_a != sr_b:
-        y_b = librosa.resample(y_b, orig_sr=sr_b, target_sr=sr_a)
 
-    y_b_stretched = time_stretch_to_tempo(y_b, source_bpm=bpm_b, target_bpm=bpm_a)
-    mixed = overlay(y_a, y_b_stretched)
-    alignment = beat_alignment_score(y_a, y_b_stretched, sr_a)
+    async def _render_at(offset_b: float, suffix: str) -> dict:
+        y_b, sr_b = await _download_audio_window(
+            source, track_ref_b, offset_sec=offset_b, duration=render_duration
+        )
+        if sr_b != sr_a:
+            y_b = librosa.resample(y_b, orig_sr=sr_b, target_sr=sr_a)
+        y_b_stretched = time_stretch_to_tempo(y_b, source_bpm=bpm_b, target_bpm=bpm_a)
+        mixed = overlay(y_a, y_b_stretched)
+        alignment = beat_alignment_score(y_a, y_b_stretched, sr_a)
 
-    RENDER_OUTPUT_DIR.mkdir(exist_ok=True)
-    output_path = RENDER_OUTPUT_DIR / f"{output_name}.wav"
-    write_render(output_path, mixed, sr_a)
+        RENDER_OUTPUT_DIR.mkdir(exist_ok=True)
+        path = RENDER_OUTPUT_DIR / f"{output_name}_{suffix}.wav"
+        write_render(path, mixed, sr_a)
+        return {"output_path": str(path), "offset_b": offset_b, "alignment": alignment}
 
-    return {
-        "output_path": str(output_path),
-        "bpm_a": bpm_a,
-        "bpm_b": bpm_b,
-        "target_bpm": bpm_a,
-        "alignment": alignment,
-    }
+    naive = await _render_at(offset_sec, "naive")
+    result = {"bpm_a": bpm_a, "bpm_b": bpm_b, "target_bpm": bpm_a, "naive": naive}
+
+    if auto_align:
+        # best_lag_sec is measured in STRETCHED-audio time; convert back to
+        # an offset shift in track B's ORIGINAL (pre-stretch) timeline by
+        # dividing by the same rate the stretch itself used.
+        best_lag_sec = naive["alignment"]["best_lag_sec"]
+        corrected_offset_b = max(0.0, offset_sec + best_lag_sec / stretch_rate)
+        result["aligned"] = await _render_at(corrected_offset_b, "aligned")
+
+    return result
 
 
 def main() -> None:

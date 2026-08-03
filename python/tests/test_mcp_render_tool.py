@@ -115,3 +115,49 @@ async def test_render_mashup_clamps_corrected_offset_to_nonnegative(monkeypatch,
 
     b_offsets = [offset for ref, offset in requested_offsets if ref == "vidB"]
     assert b_offsets[1] == pytest.approx(0.0)  # clamped, not negative
+
+
+def test_instrumental_from_stems_sums_non_vocal_layers():
+    stems = {
+        "vocals": np.array([10.0, 10.0]),
+        "drums": np.array([1.0, 1.0]),
+        "bass": np.array([2.0, 2.0]),
+        "other": np.array([3.0, 3.0]),
+    }
+    instrumental = server._instrumental_from_stems(stems)
+    assert instrumental == pytest.approx(np.array([6.0, 6.0]))
+
+
+async def test_render_stem_mashup_overlays_vocals_on_instrumental(monkeypatch, tmp_path):
+    async def fake_measure_checkpoints(source, track_ref, max_duration):
+        return {"vidVocals": [120.0], "vidInstr": [130.0]}[track_ref]
+
+    monkeypatch.setattr(server, "_measure_tempo_checkpoints", fake_measure_checkpoints)
+
+    sr = 22050
+    n = sr * 5
+    rng = np.random.RandomState(0)
+
+    async def fake_separate(source, track_ref, *, offset_sec, duration, device="cuda"):
+        # Real separate_stems always returns all 4 stems -- mock matches that.
+        return {
+            "vocals": (rng.randn(n) * 0.1).astype(np.float32),
+            "drums": (rng.randn(n) * 0.1).astype(np.float32),
+            "bass": (rng.randn(n) * 0.1).astype(np.float32),
+            "other": (rng.randn(n) * 0.1).astype(np.float32),
+        }, sr
+
+    monkeypatch.setattr(server, "_separate_track_stems", fake_separate)
+    monkeypatch.setattr(server, "RENDER_OUTPUT_DIR", tmp_path)
+
+    result = await server.render_stem_mashup(
+        source="youtube", track_ref_vocals="vidVocals", track_ref_instrumental="vidInstr",
+        output_name="stem_test", render_duration=5.0,
+    )
+
+    assert result["bpm_vocals"] == pytest.approx(120.0)
+    assert result["bpm_instrumental"] == pytest.approx(130.0)
+    assert result["target_bpm"] == pytest.approx(130.0)
+    assert "alignment" in result
+    assert Path(result["output_path"]).exists()
+    assert result["output_path"].endswith("stem_test.wav")

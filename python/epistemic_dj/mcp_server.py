@@ -721,13 +721,11 @@ RENDER_OUTPUT_DIR = Path(__file__).parent.parent / "renders"
 RENDER_WINDOW_OFFSET_SEC = 45.0  # matches the existing min-offset convention (avoid slow intros)
 
 
-async def _download_audio_window(
-    source: str, track_ref: str, *, offset_sec: float, duration: float
-):
-    """Downloads just enough of the stream to cover offset_sec+duration and
-    loads that window as a real numpy array -- the actual audio to be
-    rendered, not a feature summary. Reuses the same Range-request sizing
-    as the checkpoint measurement path (_measure_tempo_checkpoints).
+async def _download_audio_stream_file(source: str, track_ref: str, *, total_seconds: float) -> Path:
+    """Downloads just enough of the stream (bytes 0..total_seconds) to a
+    temp file and returns its path -- caller loads/deletes. Shared
+    primitive behind _download_audio_window (loads+deletes immediately)
+    and _separate_track_stems (needs a real file for Demucs).
     """
     if source == "bandcamp":
         artist_id_str, track_id_str = track_ref.split(":")
@@ -736,25 +734,56 @@ async def _download_audio_window(
         if not track.streaming_url:
             raise ValueError(f"Track {track_ref} has no streaming_url (not streamable).")
         url = track.streaming_url.get("mp3-128") or next(iter(track.streaming_url.values()))
-        range_bytes = estimate_bytes_for_seconds(offset_sec + duration, DEFAULT_MP3_BITRATE_KBPS)
-        path = await download_stream(url, range_bytes=range_bytes)
-    elif source == "youtube":
+        range_bytes = estimate_bytes_for_seconds(total_seconds, DEFAULT_MP3_BITRATE_KBPS)
+        return await download_stream(url, range_bytes=range_bytes)
+    if source == "youtube":
         stream = youtube_resolve_stream(track_ref)
         if not stream["duration_sec"]:
             raise ValueError(f"YouTube video {track_ref} has no known duration.")
         range_bytes = estimate_bytes_for_seconds(
-            offset_sec + duration, stream["abr_kbps"] or DEFAULT_BITRATE_KBPS
+            total_seconds, stream["abr_kbps"] or DEFAULT_BITRATE_KBPS
         )
-        path = await download_stream(
+        return await download_stream(
             stream["url"], suffix=f".{stream['ext']}",
             headers=stream["headers"], range_bytes=range_bytes,
         )
-    else:
-        raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
+    raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
+
+
+async def _download_audio_window(
+    source: str, track_ref: str, *, offset_sec: float, duration: float
+):
+    """Downloads just enough of the stream to cover offset_sec+duration and
+    loads that window as a real numpy array -- the actual audio to be
+    rendered, not a feature summary. Reuses the same Range-request sizing
+    as the checkpoint measurement path (_measure_tempo_checkpoints).
+    """
+    path = await _download_audio_stream_file(source, track_ref, total_seconds=offset_sec + duration)
     try:
         return load_audio_window(path, offset=offset_sec, duration=duration)
     finally:
         path.unlink(missing_ok=True)
+
+
+async def _separate_track_stems(
+    source: str, track_ref: str, *, offset_sec: float, duration: float, device: str = "cuda"
+) -> tuple[dict, int]:
+    """Downloads a track and separates it into real stems (vocals/drums/
+    bass/other) via Demucs, trimmed to [offset_sec, offset_sec+duration] --
+    same offset convention as the rest of the render pipeline (skip a
+    slow/quiet intro). Lazy-imports demucs_separator so the rest of the
+    MCP server works without the `separation` extra installed.
+    """
+    from epistemic_dj.separation.demucs_separator import separate_stems
+
+    path = await _download_audio_stream_file(source, track_ref, total_seconds=offset_sec + duration)
+    try:
+        stems, sr = separate_stems(path, device=device)
+    finally:
+        path.unlink(missing_ok=True)
+    start = int(offset_sec * sr)
+    end = int((offset_sec + duration) * sr)
+    return {name: wave[start:end] for name, wave in stems.items()}, sr
 
 
 @mcp.tool()
@@ -830,6 +859,85 @@ async def render_mashup(
         result["aligned"] = await _render_at(corrected_offset_b, "aligned")
 
     return result
+
+
+def _instrumental_from_stems(stems: dict, *, exclude: frozenset[str] = frozenset({"vocals"})):
+    """Sums the non-excluded stems (default: drums+bass+other) into a
+    single instrumental bed -- same length/samplerate as the source
+    separation, no time-alignment needed since they came from ONE
+    separation call on the same audio.
+    """
+    layers = [wave for name, wave in stems.items() if name not in exclude]
+    return sum(layers[1:], start=layers[0])
+
+
+@mcp.tool()
+async def render_stem_mashup(
+    source: str,
+    track_ref_vocals: str,
+    track_ref_instrumental: str,
+    output_name: str,
+    render_duration: float = 30.0,
+    offset_sec: float = RENDER_WINDOW_OFFSET_SEC,
+    device: str = "cuda",
+) -> dict:
+    """Phase 4 of the mixing-engine roadmap: the actual mashup capability
+    (vocals from one track over the instrumental of another) real Demucs
+    stem separation makes possible -- not two full mixes competing
+    (finding 85e654a5, Phase 3's naive full-track overlay). The
+    instrumental track (drums+bass+other, real separation output) is the
+    tempo target; the vocal stem is time-stretched to match, same
+    beatmatch/overlay/alignment mechanics as render_mashup.
+
+    Requires the `separation` extra (`uv sync --extra separation`) --
+    lazy-imported, so the rest of the server works without it. device:
+    'cuda' by default -- CPU separation is realistically minutes per
+    track, not the interactive-feeling tool this needs to be.
+
+    Both tracks must share `source` (bandcamp or youtube). Output written
+    to epistemic-dj/renders/{output_name}.wav. No auto-alignment pass yet
+    (unlike render_mashup) -- that's the natural next increment here too,
+    not assumed to transfer automatically from the full-track case.
+    """
+    tempo_checkpoints_vocals = await _measure_tempo_checkpoints(source, track_ref_vocals, 45.0)
+    tempo_checkpoints_instr = await _measure_tempo_checkpoints(
+        source, track_ref_instrumental, 45.0
+    )
+    bpm_vocals = _tempo_point_estimate(tempo_checkpoints_vocals, track_ref=track_ref_vocals)
+    bpm_instrumental = _tempo_point_estimate(
+        tempo_checkpoints_instr, track_ref=track_ref_instrumental
+    )
+
+    stems_vocals, sr_vocals = await _separate_track_stems(
+        source, track_ref_vocals, offset_sec=offset_sec, duration=render_duration, device=device
+    )
+    stems_instr, sr_instr = await _separate_track_stems(
+        source, track_ref_instrumental,
+        offset_sec=offset_sec, duration=render_duration, device=device,
+    )
+
+    vocals = stems_vocals["vocals"]
+    instrumental = _instrumental_from_stems(stems_instr)
+    if sr_vocals != sr_instr:
+        vocals = librosa.resample(vocals, orig_sr=sr_vocals, target_sr=sr_instr)
+
+    vocals_stretched = time_stretch_to_tempo(
+        vocals, source_bpm=bpm_vocals, target_bpm=bpm_instrumental
+    )
+    mixed = overlay(instrumental, vocals_stretched)
+    alignment = beat_alignment_score(instrumental, vocals_stretched, sr_instr)
+
+    RENDER_OUTPUT_DIR.mkdir(exist_ok=True)
+    output_path = RENDER_OUTPUT_DIR / f"{output_name}.wav"
+    write_render(output_path, mixed, sr_instr)
+
+    return {
+        "output_path": str(output_path),
+        "bpm_vocals": bpm_vocals,
+        "bpm_instrumental": bpm_instrumental,
+        "target_bpm": bpm_instrumental,
+        "alignment": alignment,
+    }
 
 
 def main() -> None:

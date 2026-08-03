@@ -403,15 +403,20 @@ async def calibration_resolve(prediction_id: str, max_duration: float = 45.0) ->
 
 @mcp.tool()
 def calibration_brier(
-    term_prefix: str | None = None, practitioner_id: str | None = None
+    term_prefix: str | None = None,
+    practitioner_id: str | None = None,
+    quantity: str | None = None,
 ) -> BrierResult:
     """epistemic-dj's own Brier score (predicted confidence vs. verified outcome)
     over resolved calibration predictions -- NOT empirica's calibration-report,
     which scores general self-assessment, a different signal. See
-    docs/dev/track-calibration-loop.md. Filter by genre-term prefix and/or
-    practitioner_id (for comparing multiple parallel practitioners later).
+    docs/dev/track-calibration-loop.md. Filter by genre-term prefix, practitioner_id
+    (for comparing multiple parallel practitioners later), and/or quantity
+    ("kinetic_energy" | "tempo_bpm" | ... -- omit for the combined score across all).
     """
-    return _calibration_store.brier_score(term_prefix=term_prefix, practitioner_id=practitioner_id)
+    return _calibration_store.brier_score(
+        term_prefix=term_prefix, practitioner_id=practitioner_id, quantity=quantity
+    )
 
 
 @mcp.tool()

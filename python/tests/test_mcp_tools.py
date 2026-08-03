@@ -185,7 +185,7 @@ def test_youtube_search_tracks_maps_to_source_agnostic_track(monkeypatch):
 def test_calibration_predict_logs_and_returns_prediction():
     prediction = server.calibration_predict(
         source="bandcamp", track_ref="1:2", track_name="Power Breaks",
-        term="power breaks", predicted_kinetic_energy=0.7, confidence=0.6,
+        term="power breaks", predicted_value=0.7, confidence=0.6,
     )
 
     assert prediction.source == "bandcamp"
@@ -201,7 +201,7 @@ def test_calibration_predict_with_confidence_bucket_overrides_manual_confidence(
     # -> 0.5 for a bucket with no evidence yet).
     prediction = server.calibration_predict(
         source="youtube", track_ref="abc", track_name="X", term="t",
-        predicted_kinetic_energy=0.7, confidence=0.99,
+        predicted_value=0.7, confidence=0.99,
         confidence_bucket="manual_energy_cluster",
     )
 
@@ -211,7 +211,7 @@ def test_calibration_predict_with_confidence_bucket_overrides_manual_confidence(
 def test_calibration_predict_without_bucket_uses_manual_confidence():
     prediction = server.calibration_predict(
         source="youtube", track_ref="abc", track_name="X", term="t",
-        predicted_kinetic_energy=0.7, confidence=0.6,
+        predicted_value=0.7, confidence=0.6,
     )
 
     assert prediction.confidence == pytest.approx(0.6)
@@ -220,7 +220,7 @@ def test_calibration_predict_without_bucket_uses_manual_confidence():
 def test_calibration_resolve_updates_hit_rate_for_manual_bucket():
     prediction = server.calibration_predict(
         source="youtube", track_ref="abc", track_name="X", term="t",
-        predicted_kinetic_energy=0.6, confidence=0.99,
+        predicted_value=0.6, confidence=0.99,
         confidence_bucket="manual_energy_cluster",
     )
 
@@ -239,7 +239,7 @@ def test_calibration_resolve_updates_hit_rate_for_manual_bucket():
 async def test_calibration_resolve_dispatches_bandcamp_measurement(monkeypatch):
     prediction = server.calibration_predict(
         source="bandcamp", track_ref="1:2", track_name="X", term="t",
-        predicted_kinetic_energy=0.7, confidence=0.6,
+        predicted_value=0.7, confidence=0.6,
     )
 
     from epistemic_dj.models import EstimatedValue, MusicVectors
@@ -263,7 +263,7 @@ async def test_calibration_resolve_dispatches_bandcamp_measurement(monkeypatch):
 async def test_calibration_resolve_dispatches_youtube_measurement(monkeypatch):
     prediction = server.calibration_predict(
         source="youtube", track_ref="videoid123", track_name="X", term="t",
-        predicted_kinetic_energy=0.9, confidence=0.5,
+        predicted_value=0.9, confidence=0.5,
     )
 
     from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
@@ -284,10 +284,35 @@ async def test_calibration_resolve_dispatches_youtube_measurement(monkeypatch):
     assert resolved.verified is False  # 0.9 predicted vs. a slow/low-energy measurement
 
 
+async def test_calibration_resolve_dispatches_tempo_quantity_via_youtube(monkeypatch):
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="videoid456", track_name="Y", term="t",
+        predicted_value=140.0, confidence=0.5, quantity="tempo_bpm",
+    )
+
+    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
+
+    async def fake_measure_track(video_id, *, max_duration=60.0):
+        features = AudioFeatures(
+            tempo_bpm=143.0, rms_energy=0.15, spectral_centroid_hz=2000.0,
+            onset_density_per_sec=4.0, duration_analyzed_sec=max_duration,
+            beat_interval_cv=0.05, spectral_bandwidth_hz=2000.0,
+        )
+        return SampledAudioFeatures(aggregated=features, samples=[features])
+
+    monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
+
+    resolved = await server.calibration_resolve(prediction.id, max_duration=30.0)
+
+    assert resolved.quantity == "tempo_bpm"
+    assert resolved.measured_value == pytest.approx(143.0)
+    assert resolved.verified is True  # within TEMPO_TOLERANCE_BPM (5.0) of 140.0
+
+
 async def test_calibration_resolve_rejects_unknown_source():
     prediction = server.calibration_predict(
         source="soundcloud", track_ref="x", track_name="X", term="t",
-        predicted_kinetic_energy=0.5, confidence=0.5,
+        predicted_value=0.5, confidence=0.5,
     )
     with pytest.raises(ValueError, match="Unknown source"):
         await server.calibration_resolve(prediction.id)
@@ -330,8 +355,8 @@ def test_calibration_predict_from_tags_grounds_prediction_in_real_tags():
         taste_target_terms=["breakbeat", "power breaks", "high energy electronic"],
     )
 
-    assert prediction.predicted_kinetic_energy is not None
-    assert 0.0 <= prediction.predicted_kinetic_energy <= 1.0
+    assert prediction.predicted_value is not None
+    assert 0.0 <= prediction.predicted_value <= 1.0
     assert prediction.confidence is not None
     assert prediction.taste_similarity is not None
 
@@ -347,7 +372,7 @@ def test_calibration_predict_from_tags_low_energy_tags_predict_low_energy():
         track_tags=["breakbeat", "jungle", "drum and bass", "high energy"],
         taste_target_terms=["breakbeat"],
     )
-    assert ambient.predicted_kinetic_energy < breaks.predicted_kinetic_energy
+    assert ambient.predicted_value < breaks.predicted_value
 
 
 def test_calibration_predict_from_tags_raises_on_empty_tags():

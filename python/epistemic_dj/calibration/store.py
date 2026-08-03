@@ -56,13 +56,15 @@ CREATE TABLE IF NOT EXISTS track_predictions (
     track_ref TEXT NOT NULL,
     track_name TEXT NOT NULL,
     term TEXT NOT NULL,
-    predicted_kinetic_energy REAL NOT NULL,
+    quantity TEXT NOT NULL DEFAULT 'kinetic_energy',
+    predicted_value REAL NOT NULL,
     predicted_vectors TEXT,
     confidence REAL NOT NULL,
     taste_similarity REAL,
     practitioner_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     measured_vectors TEXT,
+    measured_value REAL,
     verified INTEGER,
     delta REAL,
     resolved_at TEXT
@@ -114,6 +116,35 @@ class CalibrationStore:
         }
         if "confidence_bucket" not in existing_columns:
             self._conn.execute("ALTER TABLE track_predictions ADD COLUMN confidence_bucket TEXT")
+            existing_columns.add("confidence_bucket")
+        # quantity/predicted_value/measured_value: generalizes this store
+        # beyond kinetic_energy (mixing-engine roadmap, decision d55de6e8).
+        # Existing rows are ALL kinetic_energy predictions -- the rename
+        # preserves their values exactly; DEFAULT 'kinetic_energy' backfills
+        # quantity for them. Safe: this is a single-practitioner local
+        # SQLite file, not a shared/prod migration.
+        if "predicted_kinetic_energy" in existing_columns and "predicted_value" not in existing_columns:
+            self._conn.execute(
+                "ALTER TABLE track_predictions RENAME COLUMN predicted_kinetic_energy TO predicted_value"
+            )
+            existing_columns.discard("predicted_kinetic_energy")
+            existing_columns.add("predicted_value")
+        if "quantity" not in existing_columns:
+            self._conn.execute(
+                "ALTER TABLE track_predictions ADD COLUMN quantity TEXT NOT NULL DEFAULT 'kinetic_energy'"
+            )
+            existing_columns.add("quantity")
+        if "measured_value" not in existing_columns:
+            self._conn.execute("ALTER TABLE track_predictions ADD COLUMN measured_value REAL")
+            existing_columns.add("measured_value")
+            # Backfill from measured_vectors for already-resolved kinetic_energy
+            # rows so measured_value is uniformly queryable going forward.
+            self._conn.execute(
+                "UPDATE track_predictions SET measured_value = "
+                "json_extract(measured_vectors, '$.kinetic_energy.value') "
+                "WHERE measured_vectors IS NOT NULL AND measured_value IS NULL"
+            )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_quantity ON track_predictions(quantity)")
         self._conn.commit()
 
     def close(self) -> None:
@@ -125,12 +156,13 @@ class CalibrationStore:
         track_ref: str,
         track_name: str,
         term: str,
-        predicted_kinetic_energy: float,
+        predicted_value: float,
         confidence: float,
         practitioner_id: str = "default",
         predicted_vectors: MusicVectors | None = None,
         taste_similarity: float | None = None,
         confidence_bucket: str | None = None,
+        quantity: str = "kinetic_energy",
     ) -> TrackPrediction:
         prediction = TrackPrediction(
             id=str(uuid.uuid4()),
@@ -138,7 +170,8 @@ class CalibrationStore:
             track_ref=track_ref,
             track_name=track_name,
             term=term,
-            predicted_kinetic_energy=predicted_kinetic_energy,
+            quantity=quantity,
+            predicted_value=predicted_value,
             predicted_vectors=predicted_vectors,
             confidence=confidence,
             taste_similarity=taste_similarity,
@@ -147,13 +180,14 @@ class CalibrationStore:
         )
         self._conn.execute(
             "INSERT INTO track_predictions "
-            "(id, source, track_ref, track_name, term, predicted_kinetic_energy, "
+            "(id, source, track_ref, track_name, term, quantity, predicted_value, "
             "predicted_vectors, confidence, taste_similarity, practitioner_id, created_at, "
             "confidence_bucket) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 prediction.id, prediction.source, prediction.track_ref,
-                prediction.track_name, prediction.term, prediction.predicted_kinetic_energy,
+                prediction.track_name, prediction.term, prediction.quantity,
+                prediction.predicted_value,
                 prediction.predicted_vectors.model_dump_json()
                 if prediction.predicted_vectors else None,
                 prediction.confidence, prediction.taste_similarity,
@@ -167,27 +201,40 @@ class CalibrationStore:
     def resolve_prediction(
         self,
         prediction_id: str,
-        measured_vectors: MusicVectors,
+        measured_vectors: MusicVectors | None = None,
         tolerance: float = DEFAULT_TOLERANCE,
+        *,
+        measured_value: float | None = None,
     ) -> TrackPrediction:
+        """Resolves against either measured_vectors (the original kinetic_energy
+        path -- measured_value is extracted as vectors.kinetic_energy.value) or
+        a generic measured_value directly (new quantities, e.g. tempo_bpm,
+        that don't route through MusicVectors at all). Exactly one must be given.
+        """
+        if (measured_vectors is None) == (measured_value is None):
+            raise ValueError("Supply exactly one of measured_vectors or measured_value.")
+
         row = self._conn.execute(
-            "SELECT predicted_kinetic_energy, term, confidence_bucket "
+            "SELECT predicted_value, term, confidence_bucket, quantity "
             "FROM track_predictions WHERE id = ?",
             (prediction_id,),
         ).fetchone()
         if row is None:
             raise PredictionNotFoundError(prediction_id)
-        predicted_energy, term, confidence_bucket = row
+        predicted_value, term, confidence_bucket, quantity = row
 
-        measured_energy = measured_vectors.kinetic_energy.value
-        delta = abs(predicted_energy - measured_energy)
+        resolved_measured_value = (
+            measured_vectors.kinetic_energy.value if measured_vectors is not None else measured_value
+        )
+        delta = abs(predicted_value - resolved_measured_value)
         verified = delta <= tolerance
         resolved_at = datetime.now(UTC)
         self._conn.execute(
-            "UPDATE track_predictions SET measured_vectors = ?, verified = ?, "
-            "delta = ?, resolved_at = ? WHERE id = ?",
+            "UPDATE track_predictions SET measured_vectors = ?, measured_value = ?, "
+            "verified = ?, delta = ?, resolved_at = ? WHERE id = ?",
             (
-                measured_vectors.model_dump_json(), int(verified), delta,
+                measured_vectors.model_dump_json() if measured_vectors is not None else None,
+                resolved_measured_value, int(verified), delta,
                 resolved_at.isoformat(), prediction_id,
             ),
         )
@@ -199,7 +246,15 @@ class CalibrationStore:
         # apply_term_bias_correction). Signed (not abs) so direction is
         # preserved -- consistently over- or under-predicting a term should
         # converge the belief toward that bias.
-        self._update_belief("term_bias", term, predicted_energy - measured_energy)
+        #
+        # Key is quantity-namespaced for anything other than kinetic_energy
+        # (bare `term` stays unprefixed there, preserving the ~170 rows of
+        # accumulated term_bias history from before `quantity` existed).
+        # New quantities get their own namespace so e.g. a tempo_bpm delta
+        # (scale: tens of BPM) never gets Gaussian-averaged into the same
+        # belief as a kinetic_energy delta (scale: 0-1) under the same key.
+        belief_key = term if quantity == "kinetic_energy" else f"{quantity}:{term}"
+        self._update_belief("term_bias", belief_key, predicted_value - resolved_measured_value)
 
         # Closed-loop confidence calibration: this resolution's actual
         # verified/not outcome becomes evidence for the bucket's hit-rate
@@ -311,9 +366,9 @@ class CalibrationStore:
 
     def get_prediction(self, prediction_id: str) -> TrackPrediction:
         row = self._conn.execute(
-            "SELECT id, source, track_ref, track_name, term, predicted_kinetic_energy, "
+            "SELECT id, source, track_ref, track_name, term, quantity, predicted_value, "
             "predicted_vectors, confidence, taste_similarity, practitioner_id, created_at, "
-            "measured_vectors, verified, delta, resolved_at "
+            "measured_vectors, measured_value, verified, delta, resolved_at "
             "FROM track_predictions WHERE id = ?",
             (prediction_id,),
         ).fetchone()
@@ -327,11 +382,12 @@ class CalibrationStore:
         term: str | None = None,
         practitioner_id: str | None = None,
         resolved_only: bool = False,
+        quantity: str | None = None,
     ) -> list[TrackPrediction]:
         query = (
-            "SELECT id, source, track_ref, track_name, term, predicted_kinetic_energy, "
+            "SELECT id, source, track_ref, track_name, term, quantity, predicted_value, "
             "predicted_vectors, confidence, taste_similarity, practitioner_id, created_at, "
-            "measured_vectors, verified, delta, resolved_at FROM track_predictions"
+            "measured_vectors, measured_value, verified, delta, resolved_at FROM track_predictions"
         )
         clauses = []
         params: list[str] = []
@@ -346,6 +402,9 @@ class CalibrationStore:
             params.append(practitioner_id)
         if resolved_only:
             clauses.append("resolved_at IS NOT NULL")
+        if quantity is not None:
+            clauses.append("quantity = ?")
+            params.append(quantity)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY created_at"
@@ -391,6 +450,7 @@ class CalibrationStore:
         self,
         term_prefix: str | None = None,
         practitioner_id: str | None = None,
+        quantity: str | None = None,
     ) -> BrierResult:
         query = (
             "SELECT confidence, verified FROM track_predictions "
@@ -403,6 +463,9 @@ class CalibrationStore:
         if practitioner_id is not None:
             query += " AND practitioner_id = ?"
             params.append(practitioner_id)
+        if quantity is not None:
+            query += " AND quantity = ?"
+            params.append(quantity)
 
         rows = self._conn.execute(query, params).fetchall()
         if not rows:
@@ -419,14 +482,16 @@ def _row_to_prediction(row: tuple) -> TrackPrediction:
         track_ref=row[2],
         track_name=row[3],
         term=row[4],
-        predicted_kinetic_energy=row[5],
-        predicted_vectors=MusicVectors.model_validate_json(row[6]) if row[6] else None,
-        confidence=row[7],
-        taste_similarity=row[8],
-        practitioner_id=row[9],
-        created_at=datetime.fromisoformat(row[10]),
-        measured_vectors=MusicVectors.model_validate_json(row[11]) if row[11] else None,
-        verified=bool(row[12]) if row[12] is not None else None,
-        delta=row[13],
-        resolved_at=datetime.fromisoformat(row[14]) if row[14] else None,
+        quantity=row[5],
+        predicted_value=row[6],
+        predicted_vectors=MusicVectors.model_validate_json(row[7]) if row[7] else None,
+        confidence=row[8],
+        taste_similarity=row[9],
+        practitioner_id=row[10],
+        created_at=datetime.fromisoformat(row[11]),
+        measured_vectors=MusicVectors.model_validate_json(row[12]) if row[12] else None,
+        measured_value=row[13],
+        verified=bool(row[14]) if row[14] is not None else None,
+        delta=row[15],
+        resolved_at=datetime.fromisoformat(row[16]) if row[16] else None,
     )

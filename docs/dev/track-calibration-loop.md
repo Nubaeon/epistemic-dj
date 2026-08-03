@@ -85,26 +85,43 @@ class TrackPrediction(BaseModel):
     track_ref: str            # e.g. "artist_id:track_id" or a video id
     track_name: str
     term: str                 # search term / genre tag this candidate came from
-    predicted_kinetic_energy: Scalar
+    quantity: str = "kinetic_energy"   # what predicted_value/measured_value ARE
+    predicted_value: Scalar
     predicted_vectors: MusicVectors | None = None   # fuller prediction, optional
     confidence: Scalar        # stated P(confirmed)
     practitioner_id: str      # who made the call -- see Phase C
     created_at: datetime
     # resolution -- nullable until measured
     measured_vectors: MusicVectors | None = None
+    measured_value: Scalar | None = None
     verified: bool | None = None
     delta: Scalar | None = None
     resolved_at: datetime | None = None
 ```
 
+**Generalized beyond kinetic_energy (2026-08-03, mixing-engine roadmap Phase 1,
+empirica goal b3711ec6, decision 637962fd).** Originally `predicted_kinetic_energy`/
+resolved only via `measured_vectors.kinetic_energy`. `quantity` now names what's
+being predicted -- `"kinetic_energy"` (default, [0,1]-scaled, unchanged behavior,
+resolves through `MusicVectors`) or a new real-valued quantity like
+`"tempo_bpm"` (resolves directly against a scalar, no `MusicVectors` involved).
+Existing ~185 kinetic_energy rows migrated in place (column rename, not a new
+table) -- verified byte-for-byte Brier match (n=173, score=0.1379) before and
+after. Same predict/measure/resolve/Brier mechanics either way -- this is the
+actual mechanism David asked to reuse for mixing decisions, not a new store.
+
 Store methods (mirroring `TasteStore.log_finding` / `.decay_pattern` shape):
 
-- `log_prediction(source, track_ref, track_name, term, predicted_kinetic_energy, confidence, practitioner_id="default", predicted_vectors=None) -> TrackPrediction`
-- `resolve_prediction(prediction_id, measured_vectors: MusicVectors, tolerance=0.2) -> TrackPrediction` —
-  computes `delta = abs(predicted_kinetic_energy - measured_vectors.kinetic_energy)`,
-  `verified = delta <= tolerance`, persists both, stamps `resolved_at`.
-- `get_predictions(source=None, term=None, practitioner_id=None, resolved_only=False) -> list[TrackPrediction]`
-- `brier_score(term_prefix=None, practitioner_id=None) -> BrierResult` —
+- `log_prediction(source, track_ref, track_name, term, predicted_value, confidence, practitioner_id="default", predicted_vectors=None, quantity="kinetic_energy") -> TrackPrediction`
+- `resolve_prediction(prediction_id, measured_vectors: MusicVectors | None = None, tolerance=0.2, *, measured_value: float | None = None) -> TrackPrediction` —
+  exactly one of `measured_vectors` (kinetic_energy path) or `measured_value`
+  (generic path) must be given. Computes `delta = abs(predicted_value - measured_value)`,
+  `verified = delta <= tolerance`, persists both, stamps `resolved_at`. The
+  `term_bias` belief key is quantity-namespaced (`f"{quantity}:{term}"`) for
+  anything other than kinetic_energy, so a BPM-scale delta never gets
+  Gaussian-averaged into the same belief as a [0,1]-scale one.
+- `get_predictions(source=None, term=None, practitioner_id=None, resolved_only=False, quantity=None) -> list[TrackPrediction]`
+- `brier_score(term_prefix=None, practitioner_id=None, quantity=None) -> BrierResult` —
   `mean((confidence - float(verified))²)` over resolved rows matching the
   filters, plus `n`. This is epistemic-dj's own Brier computation — it does
   NOT call `calibration-report`. (v1 spec conflated "Brier score" with

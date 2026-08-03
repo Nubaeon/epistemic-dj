@@ -291,7 +291,7 @@ class TrackPrediction(BaseModel):
     "keep product data out of the AI's own epistemic tracking" call already
     made for TasteStore.
 
-    predicted_kinetic_energy/confidence come from cosine similarity between
+    predicted_value/confidence come from cosine similarity between
     the track's real platform/artist-assigned tags and fixed energy-anchor
     phrases (embedding.py) -- NOT from reading the track title/album name
     (confirmed unreliable: a track literally titled "Power Breaks" was
@@ -299,6 +299,14 @@ class TrackPrediction(BaseModel):
     is derived from how decisively the anchors differentiate, not from
     taste-relevance -- see taste_similarity for that, a separate question.
     measured_vectors/verified/delta/resolved_at stay None until resolved.
+
+    quantity names what predicted_value/measured_value actually are --
+    defaults to "kinetic_energy" (the original, tag-embedding-grounded use
+    case; measured via measured_vectors.kinetic_energy.value). Other
+    quantities (e.g. "tempo_bpm", added for the mixing-engine roadmap's
+    Phase 1) are real-valued, not normalized to [0,1], and resolve against
+    measured_value directly rather than through MusicVectors -- same
+    predict/measure/resolve/Brier mechanics, different scale.
     """
 
     id: str
@@ -306,7 +314,8 @@ class TrackPrediction(BaseModel):
     track_ref: str  # e.g. "artist_id:track_id" or a video id
     track_name: str
     term: str  # search term / genre tag this candidate came from
-    predicted_kinetic_energy: Scalar
+    quantity: str = "kinetic_energy"
+    predicted_value: Scalar
     predicted_vectors: MusicVectors | None = None
     confidence: Scalar = Field(description="Stated P(confirmed) -- the Brier-scoreable forecast.")
     taste_similarity: Scalar | None = Field(
@@ -321,10 +330,16 @@ class TrackPrediction(BaseModel):
     created_at: datetime
 
     measured_vectors: MusicVectors | None = None
+    measured_value: Scalar | None = Field(
+        default=None,
+        description="Generic ground-truth scalar for quantity != 'kinetic_energy' "
+        "(e.g. real measured tempo_bpm). Populated from measured_vectors.kinetic_energy.value "
+        "when quantity == 'kinetic_energy', for uniform querying either way.",
+    )
     verified: bool | None = None
     delta: Scalar | None = Field(
         default=None,
-        description="abs(predicted_kinetic_energy - measured kinetic_energy) once resolved.",
+        description="abs(predicted_value - measured_value) once resolved.",
     )
     resolved_at: datetime | None = None
 

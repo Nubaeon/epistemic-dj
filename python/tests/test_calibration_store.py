@@ -24,7 +24,7 @@ def test_log_and_get_prediction(store):
         track_ref="123:456",
         track_name="Power Breaks",
         term="power breaks",
-        predicted_kinetic_energy=0.7,
+        predicted_value=0.7,
         confidence=0.65,
         practitioner_id="claude-1",
     )
@@ -39,7 +39,7 @@ def test_log_and_get_prediction(store):
 def test_resolve_prediction_within_tolerance_is_verified(store):
     prediction = store.log_prediction(
         source="bandcamp", track_ref="1:1", track_name="X", term="t",
-        predicted_kinetic_energy=0.6, confidence=0.7,
+        predicted_value=0.6, confidence=0.7,
     )
     measured = _vectors(0.65, 0.5)
 
@@ -53,7 +53,7 @@ def test_resolve_prediction_within_tolerance_is_verified(store):
 def test_resolve_prediction_outside_tolerance_is_refuted(store):
     prediction = store.log_prediction(
         source="bandcamp", track_ref="1:1", track_name="Relaxing Power Breaks", term="power breaks",
-        predicted_kinetic_energy=0.7, confidence=0.6,
+        predicted_value=0.7, confidence=0.6,
     )
     measured = _vectors(0.09, 0.12)
 
@@ -80,7 +80,7 @@ def test_brier_score_perfect_calibration_is_zero(store):
     for i in range(3):
         p = store.log_prediction(
             source="bandcamp", track_ref=f"{i}:{i}", track_name=f"T{i}", term="t",
-            predicted_kinetic_energy=0.5, confidence=1.0,
+            predicted_value=0.5, confidence=1.0,
         )
         store.resolve_prediction(p.id, _vectors(0.5, 0.5))
 
@@ -92,13 +92,13 @@ def test_brier_score_perfect_calibration_is_zero(store):
 def test_brier_score_filters_by_term_prefix_and_practitioner(store):
     p1 = store.log_prediction(
         source="bandcamp", track_ref="1:1", track_name="A", term="genre:breaks",
-        predicted_kinetic_energy=0.5, confidence=0.9, practitioner_id="claude-1",
+        predicted_value=0.5, confidence=0.9, practitioner_id="claude-1",
     )
     store.resolve_prediction(p1.id, _vectors(0.5, 0.5))
 
     p2 = store.log_prediction(
         source="bandcamp", track_ref="2:2", track_name="B", term="genre:trance",
-        predicted_kinetic_energy=0.5, confidence=0.1, practitioner_id="claude-2",
+        predicted_value=0.5, confidence=0.1, practitioner_id="claude-2",
     )
     # refuted -- big miss
     store.resolve_prediction(p2.id, _vectors(0.99, 0.5))
@@ -114,7 +114,7 @@ def test_brier_score_filters_by_term_prefix_and_practitioner(store):
 def test_unresolved_predictions_excluded_from_brier(store):
     store.log_prediction(
         source="bandcamp", track_ref="1:1", track_name="A", term="t",
-        predicted_kinetic_energy=0.5, confidence=0.5,
+        predicted_value=0.5, confidence=0.5,
     )
     result = store.brier_score()
     assert result.n == 0
@@ -129,7 +129,7 @@ def test_get_term_bias_returns_uninformative_prior_for_new_term(store):
 def test_resolve_prediction_updates_term_bias_belief(store):
     prediction = store.log_prediction(
         source="bandcamp", track_ref="1:1", track_name="X", term="ambient",
-        predicted_kinetic_energy=0.7, confidence=0.5,
+        predicted_value=0.7, confidence=0.5,
     )
     # predicted 0.7, measured 0.4 -> consistently over-predicting this term
     store.resolve_prediction(prediction.id, _vectors(0.4, 0.5))
@@ -142,7 +142,7 @@ def test_resolve_prediction_updates_term_bias_belief(store):
 def test_term_bias_is_scoped_per_term(store):
     p1 = store.log_prediction(
         source="bandcamp", track_ref="1:1", track_name="X", term="ambient",
-        predicted_kinetic_energy=0.7, confidence=0.5,
+        predicted_value=0.7, confidence=0.5,
     )
     store.resolve_prediction(p1.id, _vectors(0.4, 0.5))
 
@@ -182,7 +182,7 @@ def test_get_hit_rate_returns_uninformative_prior_for_new_bucket(store):
 def test_resolve_prediction_updates_hit_rate_for_its_bucket(store):
     prediction = store.log_prediction(
         source="bandcamp", track_ref="1:1", track_name="X", term="t",
-        predicted_kinetic_energy=0.6, confidence=0.5, confidence_bucket="strong",
+        predicted_value=0.6, confidence=0.5, confidence_bucket="strong",
     )
     store.resolve_prediction(prediction.id, _vectors(0.65, 0.5))  # within tolerance -> verified
 
@@ -194,7 +194,7 @@ def test_resolve_prediction_updates_hit_rate_for_its_bucket(store):
 def test_hit_rate_is_scoped_per_bucket(store):
     prediction = store.log_prediction(
         source="bandcamp", track_ref="1:1", track_name="X", term="t",
-        predicted_kinetic_energy=0.6, confidence=0.5, confidence_bucket="strong",
+        predicted_value=0.6, confidence=0.5, confidence_bucket="strong",
     )
     store.resolve_prediction(prediction.id, _vectors(0.65, 0.5))
 
@@ -208,7 +208,7 @@ def test_resolve_prediction_skips_hit_rate_update_for_legacy_rows_with_no_bucket
     # outcome to a bucket it was never assigned to.
     prediction = store.log_prediction(
         source="bandcamp", track_ref="1:1", track_name="X", term="t",
-        predicted_kinetic_energy=0.6, confidence=0.5,
+        predicted_value=0.6, confidence=0.5,
     )
     store.resolve_prediction(prediction.id, _vectors(0.65, 0.5))
 
@@ -256,12 +256,12 @@ def test_confidence_bucket_migration_preserves_existing_rows(tmp_path):
 def test_delete_unresolved_predictions_never_touches_resolved(store):
     resolved = store.log_prediction(
         source="youtube", track_ref="r1", track_name="Resolved", term="t",
-        predicted_kinetic_energy=0.6, confidence=0.5,
+        predicted_value=0.6, confidence=0.5,
     )
     store.resolve_prediction(resolved.id, _vectors(0.6, 0.5))
     orphan = store.log_prediction(
         source="youtube", track_ref="o1", track_name="Orphan", term="t",
-        predicted_kinetic_energy=0.6, confidence=0.5,
+        predicted_value=0.6, confidence=0.5,
     )
 
     deleted = store.delete_unresolved_predictions(source="youtube")
@@ -272,14 +272,86 @@ def test_delete_unresolved_predictions_never_touches_resolved(store):
         store.get_prediction(orphan.id)
 
 
+def test_log_and_resolve_tempo_prediction_via_measured_value(store):
+    # Generic (non-kinetic_energy) quantity: resolves against measured_value
+    # directly, no MusicVectors involved -- Phase 1 of the mixing-engine
+    # roadmap (empirica goal b3711ec6).
+    prediction = store.log_prediction(
+        source="youtube", track_ref="vid1", track_name="Some Breaks Track", term="artist_x",
+        predicted_value=140.0, confidence=0.6, quantity="tempo_bpm",
+    )
+    assert prediction.quantity == "tempo_bpm"
+    assert prediction.predicted_value == 140.0
+
+    resolved = store.resolve_prediction(prediction.id, measured_value=143.0, tolerance=5.0)
+
+    assert resolved.verified is True
+    assert resolved.delta == pytest.approx(3.0)
+    assert resolved.measured_value == pytest.approx(143.0)
+    assert resolved.measured_vectors is None
+
+
+def test_resolve_prediction_requires_exactly_one_of_vectors_or_value(store):
+    prediction = store.log_prediction(
+        source="youtube", track_ref="vid1", track_name="X", term="t",
+        predicted_value=0.5, confidence=0.5,
+    )
+    with pytest.raises(ValueError):
+        store.resolve_prediction(prediction.id)
+    with pytest.raises(ValueError):
+        store.resolve_prediction(prediction.id, measured_vectors=_vectors(0.5), measured_value=0.5)
+
+
+def test_tempo_term_bias_does_not_contaminate_kinetic_energy_term_bias(store):
+    # Same term string, different quantity -- deltas live on different
+    # scales (BPM vs. [0,1]) and must not share a Gaussian belief.
+    ke_prediction = store.log_prediction(
+        source="bandcamp", track_ref="1:1", track_name="X", term="shared_term",
+        predicted_value=0.7, confidence=0.5,
+    )
+    store.resolve_prediction(ke_prediction.id, _vectors(0.4, 0.5))
+
+    tempo_prediction = store.log_prediction(
+        source="youtube", track_ref="vid1", track_name="Y", term="shared_term",
+        predicted_value=140.0, confidence=0.5, quantity="tempo_bpm",
+    )
+    store.resolve_prediction(tempo_prediction.id, measured_value=100.0, tolerance=5.0)
+
+    ke_bias = store.get_term_bias("shared_term")
+    assert ke_bias.evidence_count == 1
+    # Gaussian-blended with the (mean=0, variance=0.1) prior against a 0.3
+    # observation -> 0.15, same as if the tempo update never happened.
+    assert ke_bias.mean == pytest.approx(0.15)
+
+
+def test_brier_score_filters_by_quantity(store):
+    ke = store.log_prediction(
+        source="bandcamp", track_ref="1:1", track_name="A", term="t",
+        predicted_value=0.5, confidence=1.0,
+    )
+    store.resolve_prediction(ke.id, _vectors(0.5, 0.5))
+
+    tempo = store.log_prediction(
+        source="youtube", track_ref="v1", track_name="B", term="t",
+        predicted_value=140.0, confidence=0.0, quantity="tempo_bpm",
+    )
+    store.resolve_prediction(tempo.id, measured_value=200.0, tolerance=5.0)  # refuted
+
+    assert store.brier_score(quantity="kinetic_energy").n == 1
+    assert store.brier_score(quantity="kinetic_energy").brier_score == pytest.approx(0.0)
+    assert store.brier_score(quantity="tempo_bpm").n == 1
+    assert store.brier_score(quantity="tempo_bpm").brier_score == pytest.approx(0.0)  # conf=0, refuted
+    assert store.brier_score().n == 2
+
+
 def test_delete_unresolved_predictions_confidence_bucket_is_null_scopes_correctly(store):
     heuristic_orphan = store.log_prediction(
         source="youtube", track_ref="h1", track_name="Heuristic Orphan", term="t",
-        predicted_kinetic_energy=0.6, confidence=0.5,
+        predicted_value=0.6, confidence=0.5,
     )  # no confidence_bucket -- simulates the rejected heuristic approach
     genuine_pending = store.log_prediction(
         source="youtube", track_ref="g1", track_name="Genuine Pending", term="t",
-        predicted_kinetic_energy=0.6, confidence=0.5, confidence_bucket="manual_strong_basis",
+        predicted_value=0.6, confidence=0.5, confidence_bucket="manual_strong_basis",
     )  # has a real bucket -- a genuine prediction that just hasn't resolved yet
 
     deleted = store.delete_unresolved_predictions(source="youtube", confidence_bucket_is_null=True)

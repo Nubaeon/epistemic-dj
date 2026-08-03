@@ -259,7 +259,7 @@ def calibration_predict_from_tags(
     """Preferred prediction path: grounds the forecast in the track's REAL
     platform/artist-assigned tags (bandcamp_get_track_tags), not title text.
 
-    predicted_kinetic_energy: raw cosine-similarity estimate, bias-corrected
+    predicted_value (kinetic_energy): raw cosine-similarity estimate, bias-corrected
     by this term's accumulated Bayesian belief (CalibrationStore.get_term_bias
     -- closed-loop: each resolution's residual updates the belief, correcting
     future predictions for the same term). confidence: NOT the raw anchor
@@ -298,7 +298,7 @@ def calibration_predict_from_tags(
     similarity = tag_taste_similarity(track_tags, taste_target_terms)
     return _calibration_store.log_prediction(
         source=source, track_ref=track_ref, track_name=track_name, term=term,
-        predicted_kinetic_energy=predicted_energy, confidence=confidence,
+        predicted_value=predicted_energy, confidence=confidence,
         practitioner_id=practitioner_id, taste_similarity=similarity,
         confidence_bucket=bucket,
     )
@@ -310,64 +310,94 @@ def calibration_predict(
     track_ref: str,
     track_name: str,
     term: str,
-    predicted_kinetic_energy: float,
+    predicted_value: float,
     confidence: float,
     practitioner_id: str = "default",
     confidence_bucket: str | None = None,
+    quantity: str = "kinetic_energy",
 ) -> TrackPrediction:
     """Manual judgment-call prediction path -- fallback for when real tag
     data doesn't exist (e.g. YouTube, which has no artist-tag equivalent to
     Bandcamp's). Prefer calibration_predict_from_tags when track_tags is
-    available; it's grounded in real platform data, not title-text reading.
+    available and quantity is kinetic_energy; it's grounded in real platform
+    data, not title-text reading.
 
     source must be 'bandcamp' or 'youtube'. track_ref: for bandcamp,
     'artist_id:track_id' (matching audio_analyze_track's args); for
     youtube, the video id (matching youtube_search_tracks' Track.id).
-    predicted_kinetic_energy must ALWAYS be a genuine, individually-reasoned
+    predicted_value must ALWAYS be a genuine, individually-reasoned
     judgment call about THIS track -- never derived from a lookup table or
     string-matched category (that's just a heuristic algorithm wearing an
     AI-shaped costume, not the holistic judgment this path exists for).
+    This applies to every quantity, not just kinetic_energy -- e.g. a
+    predicted tempo_bpm must be reasoned from real per-track signal
+    (title/tag/genre cues), not a bare genre-average lookup.
+
+    quantity: what predicted_value actually measures. "kinetic_energy"
+    (default) is [0,1]-scaled and resolves via MusicVectors. Other
+    quantities (currently: "tempo_bpm", added for the mixing-engine
+    roadmap's Phase 1 -- see empirica goal b3711ec6) are real-valued and
+    resolve directly against a measured scalar -- see calibration_resolve.
 
     confidence_bucket: optional. When set, `confidence` is IGNORED and
     instead computed from this bucket's real Bayesian hit-rate belief
     (CalibrationStore.get_hit_rate) -- the same closed-loop mechanism
     calibration_predict_from_tags uses for margin-strength buckets, applied
     here to whatever repeatable classification of judgment call this is
-    (e.g. 'manual_energy_cluster', 'manual_underlay'). This is a distinct
-    question from predicted_kinetic_energy: it's "how reliable has this
-    KIND of call been," not a substitute for reasoning about the track
-    itself. Omit for a one-off call with no natural repeatable category --
-    confidence is then whatever you genuinely believe.
+    (e.g. 'manual_energy_cluster', 'manual_underlay', 'tempo_genre_typical').
+    This is a distinct question from predicted_value: it's "how reliable
+    has this KIND of call been," not a substitute for reasoning about the
+    track itself. Omit for a one-off call with no natural repeatable
+    category -- confidence is then whatever you genuinely believe.
     """
     if confidence_bucket is not None:
         confidence = _calibration_store.get_hit_rate(confidence_bucket).mean
     return _calibration_store.log_prediction(
         source=source, track_ref=track_ref, track_name=track_name, term=term,
-        predicted_kinetic_energy=predicted_kinetic_energy, confidence=confidence,
+        predicted_value=predicted_value, confidence=confidence,
         practitioner_id=practitioner_id, confidence_bucket=confidence_bucket,
+        quantity=quantity,
     )
+
+
+TEMPO_TOLERANCE_BPM = 5.0
 
 
 @mcp.tool()
 async def calibration_resolve(prediction_id: str, max_duration: float = 45.0) -> TrackPrediction:
     """Measures the real audio for a previously-logged prediction and resolves it.
 
-    Confirmed/refuted against kinetic_energy only (tolerance 0.2) -- see
-    docs/dev/track-calibration-loop.md for why. Dispatches to Bandcamp or
-    YouTube's measure() path based on the prediction's stored `source`.
+    Dispatches to Bandcamp or YouTube's measure() path based on the
+    prediction's stored `source`, then resolves against whichever ground
+    truth matches the prediction's `quantity`:
+    - "kinetic_energy" (tolerance 0.2, see docs/dev/track-calibration-loop.md):
+      resolved via the full MusicVectors mapping.
+    - "tempo_bpm" (tolerance 5.0 BPM): resolved directly against the real
+      beat-tracked tempo_bpm that audio/analysis.py already extracts as
+      part of the standard feature pipeline -- no separate measurement path
+      needed, same download+analyze call as the kinetic_energy path.
     """
     prediction = _calibration_store.get_prediction(prediction_id)
+    wants_tempo = prediction.quantity == "tempo_bpm"
     if prediction.source == "bandcamp":
-        artist_id_str, track_id_str = prediction.track_ref.split(":")
         result = await audio_analyze_track(
-            artist_id=int(artist_id_str), track_id=int(track_id_str), max_duration=max_duration
+            artist_id=int(prediction.track_ref.split(":")[0]),
+            track_id=int(prediction.track_ref.split(":")[1]),
+            max_duration=max_duration,
         )
         vectors = MusicVectors.model_validate(result["vectors"])
+        measured_tempo_bpm = result["features"]["aggregated"]["tempo_bpm"] if wants_tempo else None
     elif prediction.source == "youtube":
         features = await youtube_measure_track(prediction.track_ref, max_duration=max_duration)
         vectors = audio_features_to_vectors(features)
+        measured_tempo_bpm = features.aggregated.tempo_bpm if wants_tempo else None
     else:
         raise ValueError(f"Unknown source '{prediction.source}' -- must be bandcamp or youtube.")
+
+    if wants_tempo:
+        return _calibration_store.resolve_prediction(
+            prediction_id, measured_value=measured_tempo_bpm, tolerance=TEMPO_TOLERANCE_BPM
+        )
     return _calibration_store.resolve_prediction(prediction_id, vectors)
 
 

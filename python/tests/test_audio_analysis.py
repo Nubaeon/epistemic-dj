@@ -11,11 +11,14 @@ import soundfile as sf
 
 from epistemic_dj.audio.analysis import (
     _aggregate_features,
+    _checkpoint_count,
+    _checkpoint_offsets,
     _sample_offsets,
     analyze_file,
     analyze_track,
     download_stream,
     sample_track,
+    sample_track_checkpoints,
 )
 
 SAMPLE_RATE = 22050
@@ -166,6 +169,55 @@ def test_sample_offsets_degrades_gracefully_for_short_tracks():
     offsets = _sample_offsets(track_duration_sec=50.0, min_offset=45.0, window=15.0)
     assert all(o >= 0.0 for o in offsets)
     assert all(o + 15.0 <= 50.0 + 1e-6 for o in offsets)
+
+
+def test_checkpoint_count_is_three_for_typical_track_lengths():
+    assert _checkpoint_count(180.0) == 3  # 3 min
+    assert _checkpoint_count(300.0) == 3  # 5 min
+    assert _checkpoint_count(360.0) == 3  # exactly at the threshold
+
+
+def test_checkpoint_count_scales_up_for_very_long_material():
+    # DJ set/mix well beyond typical track length -- more checkpoints,
+    # not a single number averaged across the whole span.
+    assert _checkpoint_count(720.0) > 3  # 12 min
+    assert _checkpoint_count(3600.0) > _checkpoint_count(720.0)  # 60 min > 12 min
+
+
+def test_checkpoint_offsets_covers_full_span_for_n_points():
+    offsets = _checkpoint_offsets(
+        track_duration_sec=600.0, min_offset=45.0, window=15.0, num_checkpoints=5
+    )
+    assert len(offsets) == 5
+    assert offsets[0] == pytest.approx(45.0)
+    assert offsets[-1] == pytest.approx(585.0)  # 600 - 15
+    assert offsets == sorted(offsets)
+
+
+def test_checkpoint_offsets_degrades_gracefully_for_short_tracks():
+    offsets = _checkpoint_offsets(
+        track_duration_sec=50.0, min_offset=45.0, window=15.0, num_checkpoints=5
+    )
+    assert all(o >= 0.0 for o in offsets)
+    assert all(o + 15.0 <= 50.0 + 1e-6 for o in offsets)
+
+
+async def test_sample_track_checkpoints_returns_raw_samples_no_aggregation(
+    monkeypatch, intro_then_click_track_file
+):
+    async def fake_download_stream(url, *, suffix=".mp3", headers=None, range_bytes=None):
+        return intro_then_click_track_file
+
+    monkeypatch.setattr("epistemic_dj.audio.analysis.download_stream", fake_download_stream)
+    monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: None)
+
+    samples = await sample_track_checkpoints(
+        "https://example.com/track.mp3", track_duration_sec=90.0, min_offset=60.0, window=15.0,
+    )
+
+    assert isinstance(samples, list)
+    assert len(samples) >= 1
+    assert all(hasattr(s, "tempo_bpm") for s in samples)  # raw AudioFeatures, not aggregated
 
 
 def test_aggregate_features_takes_the_mean():

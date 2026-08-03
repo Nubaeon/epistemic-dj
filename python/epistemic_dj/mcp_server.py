@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from statistics import median
 
 from bandcamp_async_api.models import CollectionItem, SearchResultItem
 from mcp.server.fastmcp import FastMCP
 
-from epistemic_dj.audio import audio_features_to_vectors, sample_track
+from epistemic_dj.audio import audio_features_to_vectors, sample_track, sample_track_checkpoints
 from epistemic_dj.bandcamp.adapter import collection_item_to_track
 from epistemic_dj.bandcamp.client import (
     MissingIdentityTokenError,
@@ -43,6 +44,7 @@ from epistemic_dj.taste import TasteStore
 from epistemic_dj.youtube import get_playlist_tracks as youtube_get_playlist_tracks_impl
 from epistemic_dj.youtube import get_subscribed_artists as youtube_get_subscribed_artists_impl
 from epistemic_dj.youtube import measure_track as youtube_measure_track
+from epistemic_dj.youtube import measure_track_checkpoints as youtube_measure_track_checkpoints
 from epistemic_dj.youtube import search as youtube_search
 from epistemic_dj.youtube import search_result_to_track as youtube_search_result_to_track
 
@@ -371,6 +373,58 @@ def calibration_predict(
 
 TEMPO_TOLERANCE_BPM = 5.0
 CHEAP_TEMPO_EXCERPT_DURATION = 12.0
+TEMPO_INSTABILITY_SPREAD_BPM = 15.0
+
+
+async def _measure_tempo_checkpoints(
+    source: str, track_ref: str, max_duration: float
+) -> list[float]:
+    """Real per-checkpoint tempo readings (pre/check/post -- 3 for most
+    tracks, more for very long material) instead of a single collapsed
+    scalar (David, 2026-08-03: apply the same multi-point measurement
+    discipline used for Empirica's own transactions to audio -- 3 places
+    matches most music, longer material needs more checks). Checkpoint
+    count/spacing scales with track duration via
+    sample_track_checkpoints/measure_track_checkpoints -- see their
+    docstrings for why this is a separate path from sample_track()
+    (which feeds the deployed kinetic_energy/valence regressions).
+    """
+    if source == "bandcamp":
+        artist_id_str, track_id_str = track_ref.split(":")
+        async with managed_client() as client:
+            track = await client.get_track(int(artist_id_str), int(track_id_str))
+        if not track.streaming_url:
+            raise ValueError(f"Track {track_ref} has no streaming_url (not streamable).")
+        if not track.duration:
+            raise ValueError(f"Track {track_ref} has no known duration.")
+        url = track.streaming_url.get("mp3-128") or next(iter(track.streaming_url.values()))
+        samples = await sample_track_checkpoints(
+            url, track_duration_sec=track.duration, window=min(max_duration, 15.0)
+        )
+    elif source == "youtube":
+        samples = await youtube_measure_track_checkpoints(track_ref, max_duration=max_duration)
+    else:
+        raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
+    return [s.tempo_bpm for s in samples]
+
+
+def _tempo_point_estimate(checkpoints: list[float], *, track_ref: str) -> float:
+    """Median across checkpoints -- robust to one outlier window, unlike a
+    mean. When the spread is large, this is real within-track tempo
+    variation (DNB-style dynamic tracks), not measurement noise -- printed
+    as a visible note rather than silently averaged away. Not persisted
+    to CalibrationStore (schema stays scalar), so this is the one place
+    that surfaces it.
+    """
+    point = median(checkpoints)
+    spread = max(checkpoints) - min(checkpoints)
+    if spread >= TEMPO_INSTABILITY_SPREAD_BPM:
+        print(
+            f"[tempo instability] {track_ref}: checkpoints={[round(c, 1) for c in checkpoints]} "
+            f"spread={spread:.1f} BPM (>= {TEMPO_INSTABILITY_SPREAD_BPM} threshold) -- "
+            "genuine within-track variation, not noise; median used as the point estimate."
+        )
+    return point
 
 
 @mcp.tool()
@@ -383,15 +437,16 @@ async def calibration_predict_tempo(
     confidence_bucket: str | None = "tempo_short_excerpt",
     excerpt_duration: float = CHEAP_TEMPO_EXCERPT_DURATION,
 ) -> TrackPrediction:
-    """The ONLY correct way to predict tempo_bpm -- from a real, short/cheap
-    audio excerpt of THIS track, never from its title/tags/genre (David's
-    correction, 2026-08-03: 'track names and even categories are unreliable
-    ... only checking the actual track itself will lead to correct hits' --
-    see empirica mistake b54d3bba, this session's second run-in with the
-    same heuristic-lookup anti-pattern first rejected for kinetic_energy).
+    """The ONLY correct way to predict tempo_bpm -- from real, short/cheap
+    audio checkpoints of THIS track, never from its title/tags/genre
+    (David's correction, 2026-08-03: 'track names and even categories are
+    unreliable ... only checking the actual track itself will lead to
+    correct hits' -- empirica mistake b54d3bba). Multi-checkpoint, not a
+    single excerpt, per David's follow-up: 'we should do the same thing we
+    do with empirica, pre-check-post' (see _measure_tempo_checkpoints).
 
-    predicted_value is the genuinely-measured tempo_bpm of a short
-    (excerpt_duration-per-window, default 12s) analysis pass -- cheap
+    predicted_value is the median across genuinely-measured per-checkpoint
+    tempo_bpm readings (excerpt_duration-per-window, default 12s) -- cheap
     relative to calibration_resolve's fuller default (45s per window), but
     still real audio, not a guess. confidence comes from confidence_bucket's
     real Bayesian hit-rate (same closed-loop mechanism as calibration_predict),
@@ -399,17 +454,8 @@ async def calibration_predict_tempo(
     analysis -- exactly the kind of fast-triage-vs-expensive-verify signal
     genuinely worth having for scanning many mix candidates.
     """
-    if source == "bandcamp":
-        artist_id_str, track_id_str = track_ref.split(":")
-        result = await audio_analyze_track(
-            artist_id=int(artist_id_str), track_id=int(track_id_str), max_duration=excerpt_duration
-        )
-        predicted_bpm = result["features"]["aggregated"]["tempo_bpm"]
-    elif source == "youtube":
-        features = await youtube_measure_track(track_ref, max_duration=excerpt_duration)
-        predicted_bpm = features.aggregated.tempo_bpm
-    else:
-        raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
+    checkpoints = await _measure_tempo_checkpoints(source, track_ref, excerpt_duration)
+    predicted_bpm = _tempo_point_estimate(checkpoints, track_ref=track_ref)
 
     confidence = (
         _calibration_store.get_hit_rate(confidence_bucket).mean if confidence_bucket else 0.5
@@ -431,13 +477,20 @@ async def calibration_resolve(prediction_id: str, max_duration: float = 45.0) ->
     truth matches the prediction's `quantity`:
     - "kinetic_energy" (tolerance 0.2, see docs/dev/track-calibration-loop.md):
       resolved via the full MusicVectors mapping.
-    - "tempo_bpm" (tolerance 5.0 BPM): resolved directly against the real
-      beat-tracked tempo_bpm that audio/analysis.py already extracts as
-      part of the standard feature pipeline -- no separate measurement path
-      needed, same download+analyze call as the kinetic_energy path.
+    - "tempo_bpm" (tolerance 5.0 BPM): resolved against the median of real
+      multi-checkpoint tempo_bpm readings (see _measure_tempo_checkpoints)
+      -- pre/check/post, more checkpoints for very long material.
     """
     prediction = _calibration_store.get_prediction(prediction_id)
-    wants_tempo = prediction.quantity == "tempo_bpm"
+    if prediction.quantity == "tempo_bpm":
+        checkpoints = await _measure_tempo_checkpoints(
+            prediction.source, prediction.track_ref, max_duration
+        )
+        measured_tempo_bpm = _tempo_point_estimate(checkpoints, track_ref=prediction.track_ref)
+        return _calibration_store.resolve_prediction(
+            prediction_id, measured_value=measured_tempo_bpm, tolerance=TEMPO_TOLERANCE_BPM
+        )
+
     if prediction.source == "bandcamp":
         result = await audio_analyze_track(
             artist_id=int(prediction.track_ref.split(":")[0]),
@@ -445,18 +498,11 @@ async def calibration_resolve(prediction_id: str, max_duration: float = 45.0) ->
             max_duration=max_duration,
         )
         vectors = MusicVectors.model_validate(result["vectors"])
-        measured_tempo_bpm = result["features"]["aggregated"]["tempo_bpm"] if wants_tempo else None
     elif prediction.source == "youtube":
         features = await youtube_measure_track(prediction.track_ref, max_duration=max_duration)
         vectors = audio_features_to_vectors(features)
-        measured_tempo_bpm = features.aggregated.tempo_bpm if wants_tempo else None
     else:
         raise ValueError(f"Unknown source '{prediction.source}' -- must be bandcamp or youtube.")
-
-    if wants_tempo:
-        return _calibration_store.resolve_prediction(
-            prediction_id, measured_value=measured_tempo_bpm, tolerance=TEMPO_TOLERANCE_BPM
-        )
     return _calibration_store.resolve_prediction(prediction_id, vectors)
 
 
@@ -478,19 +524,6 @@ def _tempo_compatibility_pct(bpm_a: float, bpm_b: float) -> float:
     return min(abs(bpm_a - ratio * bpm_b) / bpm_a * 100.0 for ratio in _TEMPO_OCTAVE_RATIOS)
 
 
-async def _measure_tempo_bpm(source: str, track_ref: str, max_duration: float) -> float:
-    if source == "bandcamp":
-        artist_id_str, track_id_str = track_ref.split(":")
-        result = await audio_analyze_track(
-            artist_id=int(artist_id_str), track_id=int(track_id_str), max_duration=max_duration
-        )
-        return result["features"]["aggregated"]["tempo_bpm"]
-    if source == "youtube":
-        features = await youtube_measure_track(track_ref, max_duration=max_duration)
-        return features.aggregated.tempo_bpm
-    raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
-
-
 @mcp.tool()
 async def calibration_predict_tempo_compatibility(
     source: str,
@@ -503,22 +536,25 @@ async def calibration_predict_tempo_compatibility(
     excerpt_duration: float = CHEAP_TEMPO_EXCERPT_DURATION,
 ) -> TrackPrediction:
     """Phase 2 of the mixing-engine roadmap: pairwise tempo-feasibility,
-    predicted from real (cheap-excerpt) audio on BOTH tracks -- never from
-    titles/tags (same discipline as calibration_predict_tempo). Key/mode
-    compatibility is explicitly out of scope here (needs empirica goal
-    9a40ff1f's key detection, not built yet) -- this is tempo-feasibility
-    only.
+    predicted from real (cheap, multi-checkpoint) audio on BOTH tracks --
+    never from titles/tags (same discipline as calibration_predict_tempo).
+    Key/mode compatibility is explicitly out of scope here (needs empirica
+    goal 9a40ff1f's key detection, not built yet) -- this is
+    tempo-feasibility only.
 
-    predicted_value is the octave-normalized percent-difference between the
-    two tracks' short-excerpt tempos (see _tempo_compatibility_pct) --
-    lower means more mixable. quantity='tempo_compatibility_pct'.
-    track_ref is stored as 'track_ref_a::track_ref_b' so calibration_resolve
-    can't accidentally dispatch this as a single-track prediction (its
-    source-specific split logic would choke on the composite ref) --
-    resolve this one via calibration_resolve_tempo_compatibility instead.
+    predicted_value is the octave-normalized percent-difference between
+    the two tracks' median short-excerpt tempos (see
+    _tempo_compatibility_pct) -- lower means more mixable.
+    quantity='tempo_compatibility_pct'. track_ref is stored as
+    'track_ref_a::track_ref_b' so calibration_resolve can't accidentally
+    dispatch this as a single-track prediction (its source-specific split
+    logic would choke on the composite ref) -- resolve this one via
+    calibration_resolve_tempo_compatibility instead.
     """
-    bpm_a = await _measure_tempo_bpm(source, track_ref_a, excerpt_duration)
-    bpm_b = await _measure_tempo_bpm(source, track_ref_b, excerpt_duration)
+    checkpoints_a = await _measure_tempo_checkpoints(source, track_ref_a, excerpt_duration)
+    checkpoints_b = await _measure_tempo_checkpoints(source, track_ref_b, excerpt_duration)
+    bpm_a = _tempo_point_estimate(checkpoints_a, track_ref=track_ref_a)
+    bpm_b = _tempo_point_estimate(checkpoints_b, track_ref=track_ref_b)
     predicted_pct = _tempo_compatibility_pct(bpm_a, bpm_b)
 
     confidence = (
@@ -538,8 +574,9 @@ async def calibration_resolve_tempo_compatibility(
 ) -> TrackPrediction:
     """Resolves a calibration_predict_tempo_compatibility prediction against
     the same octave-normalized percent-difference computed from FULLER
-    (default 45s) audio on both tracks -- the more expensive, more reliable
-    reading, same tiering as calibration_resolve's tempo_bpm path.
+    (default 45s), multi-checkpoint audio on both tracks -- the more
+    expensive, more reliable reading, same tiering as calibration_resolve's
+    tempo_bpm path.
     """
     prediction = _calibration_store.get_prediction(prediction_id)
     if prediction.quantity != "tempo_compatibility_pct":
@@ -548,8 +585,10 @@ async def calibration_resolve_tempo_compatibility(
             "not 'tempo_compatibility_pct' -- use calibration_resolve instead."
         )
     track_ref_a, track_ref_b = prediction.track_ref.split("::")
-    bpm_a = await _measure_tempo_bpm(prediction.source, track_ref_a, max_duration)
-    bpm_b = await _measure_tempo_bpm(prediction.source, track_ref_b, max_duration)
+    checkpoints_a = await _measure_tempo_checkpoints(prediction.source, track_ref_a, max_duration)
+    checkpoints_b = await _measure_tempo_checkpoints(prediction.source, track_ref_b, max_duration)
+    bpm_a = _tempo_point_estimate(checkpoints_a, track_ref=track_ref_a)
+    bpm_b = _tempo_point_estimate(checkpoints_b, track_ref=track_ref_b)
     measured_pct = _tempo_compatibility_pct(bpm_a, bpm_b)
     return _calibration_store.resolve_prediction(
         prediction_id, measured_value=measured_pct, tolerance=TEMPO_COMPATIBILITY_TOLERANCE_PCT

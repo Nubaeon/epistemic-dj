@@ -284,23 +284,29 @@ async def test_calibration_resolve_dispatches_youtube_measurement(monkeypatch):
     assert resolved.verified is False  # 0.9 predicted vs. a slow/low-energy measurement
 
 
-async def test_calibration_predict_tempo_measures_real_short_excerpt(monkeypatch):
-    # The corrected path (David's correction, 2026-08-03): predicted_value
-    # must come from a real audio excerpt, never title/genre text.
-    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
+def _checkpoint_features(*tempos):
+    from epistemic_dj.audio.analysis import AudioFeatures
 
-    seen_durations = []
-
-    async def fake_measure_track(video_id, *, max_duration=60.0):
-        seen_durations.append(max_duration)
-        features = AudioFeatures(
-            tempo_bpm=128.0, rms_energy=0.15, spectral_centroid_hz=2000.0,
-            onset_density_per_sec=4.0, duration_analyzed_sec=max_duration,
+    return [
+        AudioFeatures(
+            tempo_bpm=t, rms_energy=0.15, spectral_centroid_hz=2000.0,
+            onset_density_per_sec=4.0, duration_analyzed_sec=12.0,
             beat_interval_cv=0.05, spectral_bandwidth_hz=2000.0,
         )
-        return SampledAudioFeatures(aggregated=features, samples=[features])
+        for t in tempos
+    ]
 
-    monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
+
+async def test_calibration_predict_tempo_measures_real_short_excerpt(monkeypatch):
+    # The corrected path (David's correction, 2026-08-03): predicted_value
+    # must come from real audio checkpoints, never title/genre text.
+    seen_durations = []
+
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+        seen_durations.append(max_duration)
+        return _checkpoint_features(128.0)
+
+    monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
 
     prediction = await server.calibration_predict_tempo(
         source="youtube", track_ref="vid1", track_name="X", term="artist_x",
@@ -314,14 +320,45 @@ async def test_calibration_predict_tempo_measures_real_short_excerpt(monkeypatch
     assert seen_durations == [server.CHEAP_TEMPO_EXCERPT_DURATION]
 
 
+async def test_calibration_predict_tempo_uses_median_across_checkpoints(monkeypatch):
+    # Real within-track variation (e.g. DNB-style tracks) -- median, not
+    # mean, so one outlier checkpoint doesn't dominate the point estimate.
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+        return _checkpoint_features(120.0, 122.0, 200.0)  # one wild outlier
+
+    monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
+
+    prediction = await server.calibration_predict_tempo(
+        source="youtube", track_ref="vid1", track_name="X", term="artist_x",
+    )
+
+    assert prediction.predicted_value == pytest.approx(122.0)  # median of [120, 122, 200]
+
+
 async def test_calibration_predict_tempo_bandcamp_path_uses_excerpt_duration(monkeypatch):
-    seen_durations = []
+    class FakeTrack:
+        streaming_url = {"mp3-128": "https://example.com/stream.mp3"}
+        duration = 200.0
 
-    async def fake_audio_analyze_track(artist_id, track_id, max_duration=60.0):
-        seen_durations.append(max_duration)
-        return {"features": {"aggregated": {"tempo_bpm": 96.0}}, "vectors": {}}
+    class FakeClient:
+        async def get_track(self, artist_id, track_id):
+            assert artist_id == 1
+            assert track_id == 2
+            return FakeTrack()
 
-    monkeypatch.setattr(server, "audio_analyze_track", fake_audio_analyze_track)
+    @asynccontextmanager
+    async def fake_managed_client(identity_token=None):
+        yield FakeClient()
+
+    monkeypatch.setattr(server, "managed_client", fake_managed_client)
+
+    seen_windows = []
+
+    async def fake_sample_checkpoints(streaming_url, *, track_duration_sec, window=15.0, **kwargs):
+        seen_windows.append(window)
+        return _checkpoint_features(96.0)
+
+    monkeypatch.setattr(server, "sample_track_checkpoints", fake_sample_checkpoints)
 
     prediction = await server.calibration_predict_tempo(
         source="bandcamp", track_ref="1:2", track_name="X", term="artist_y",
@@ -330,7 +367,7 @@ async def test_calibration_predict_tempo_bandcamp_path_uses_excerpt_duration(mon
 
     assert prediction.predicted_value == pytest.approx(96.0)
     assert prediction.confidence == pytest.approx(0.5)  # confidence_bucket=None -> default 0.5
-    assert seen_durations == [server.CHEAP_TEMPO_EXCERPT_DURATION]
+    assert seen_windows == [server.CHEAP_TEMPO_EXCERPT_DURATION]
 
 
 async def test_tempo_compatibility_pct_octave_normalizes():
@@ -346,19 +383,12 @@ async def test_tempo_compatibility_pct_octave_normalizes():
 
 
 async def test_calibration_predict_tempo_compatibility_measures_both_tracks(monkeypatch):
-    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
-
     bpm_by_video = {"vidA": 128.0, "vidB": 132.0}
 
-    async def fake_measure_track(video_id, *, max_duration=60.0):
-        features = AudioFeatures(
-            tempo_bpm=bpm_by_video[video_id], rms_energy=0.15, spectral_centroid_hz=2000.0,
-            onset_density_per_sec=4.0, duration_analyzed_sec=max_duration,
-            beat_interval_cv=0.05, spectral_bandwidth_hz=2000.0,
-        )
-        return SampledAudioFeatures(aggregated=features, samples=[features])
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+        return _checkpoint_features(bpm_by_video[video_id])
 
-    monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
+    monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
 
     prediction = await server.calibration_predict_tempo_compatibility(
         source="youtube", track_ref_a="vidA", track_ref_b="vidB",
@@ -372,8 +402,6 @@ async def test_calibration_predict_tempo_compatibility_measures_both_tracks(monk
 
 
 async def test_calibration_resolve_tempo_compatibility_uses_fuller_analysis(monkeypatch):
-    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
-
     prediction = server.calibration_predict(
         source="youtube", track_ref="vidA::vidB", track_name="A vs B", term="pair_x",
         predicted_value=3.0, confidence=0.5, quantity="tempo_compatibility_pct",
@@ -381,15 +409,10 @@ async def test_calibration_resolve_tempo_compatibility_uses_fuller_analysis(monk
 
     bpm_by_video = {"vidA": 130.0, "vidB": 130.0}  # fuller analysis says exact match now
 
-    async def fake_measure_track(video_id, *, max_duration=60.0):
-        features = AudioFeatures(
-            tempo_bpm=bpm_by_video[video_id], rms_energy=0.15, spectral_centroid_hz=2000.0,
-            onset_density_per_sec=4.0, duration_analyzed_sec=max_duration,
-            beat_interval_cv=0.05, spectral_bandwidth_hz=2000.0,
-        )
-        return SampledAudioFeatures(aggregated=features, samples=[features])
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+        return _checkpoint_features(bpm_by_video[video_id])
 
-    monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
+    monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
 
     resolved = await server.calibration_resolve_tempo_compatibility(
         prediction.id, max_duration=45.0
@@ -414,23 +437,34 @@ async def test_calibration_resolve_dispatches_tempo_quantity_via_youtube(monkeyp
         predicted_value=140.0, confidence=0.5, quantity="tempo_bpm",
     )
 
-    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+        return _checkpoint_features(143.0)
 
-    async def fake_measure_track(video_id, *, max_duration=60.0):
-        features = AudioFeatures(
-            tempo_bpm=143.0, rms_energy=0.15, spectral_centroid_hz=2000.0,
-            onset_density_per_sec=4.0, duration_analyzed_sec=max_duration,
-            beat_interval_cv=0.05, spectral_bandwidth_hz=2000.0,
-        )
-        return SampledAudioFeatures(aggregated=features, samples=[features])
-
-    monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
+    monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
 
     resolved = await server.calibration_resolve(prediction.id, max_duration=30.0)
 
     assert resolved.quantity == "tempo_bpm"
     assert resolved.measured_value == pytest.approx(143.0)
     assert resolved.verified is True  # within TEMPO_TOLERANCE_BPM (5.0) of 140.0
+
+
+async def test_calibration_resolve_prints_instability_note_on_large_spread(monkeypatch, capsys):
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="dnb_vid", track_name="Y", term="t",
+        predicted_value=140.0, confidence=0.5, quantity="tempo_bpm",
+    )
+
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+        return _checkpoint_features(100.0, 140.0, 175.0)  # spread=75, well over threshold
+
+    monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
+
+    await server.calibration_resolve(prediction.id, max_duration=30.0)
+
+    captured = capsys.readouterr()
+    assert "tempo instability" in captured.out
+    assert "dnb_vid" in captured.out
 
 
 async def test_calibration_resolve_rejects_unknown_source():

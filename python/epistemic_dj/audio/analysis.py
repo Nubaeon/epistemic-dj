@@ -11,6 +11,7 @@ beginning/middle/end, aggregating rather than trusting one window.
 
 from __future__ import annotations
 
+import math
 import tempfile
 from pathlib import Path
 
@@ -201,3 +202,71 @@ async def sample_track(
     finally:
         path.unlink(missing_ok=True)
     return SampledAudioFeatures(aggregated=_aggregate_features(samples), samples=samples)
+
+
+# Checkpoint-count scaling for very long material (David, 2026-08-03): 3
+# checkpoints (beginning/middle/end) matches most tracks, but a fixed 3
+# points cannot represent genuine structural variation across, say, an
+# hour-long DJ set/mix -- add proportionally more checkpoints past this
+# threshold instead of silently averaging a growing span into one number.
+LONG_TRACK_THRESHOLD_SEC = 360.0  # 6 min -- beyond typical single-track length
+CHECKPOINT_INTERVAL_SEC = 180.0  # +1 checkpoint per ~3 extra minutes
+
+
+def _checkpoint_count(track_duration_sec: float) -> int:
+    if track_duration_sec <= LONG_TRACK_THRESHOLD_SEC:
+        return 3
+    extra = math.ceil((track_duration_sec - LONG_TRACK_THRESHOLD_SEC) / CHECKPOINT_INTERVAL_SEC)
+    return 3 + extra
+
+
+def _checkpoint_offsets(
+    track_duration_sec: float, min_offset: float, window: float, num_checkpoints: int
+) -> list[float]:
+    """N evenly-spaced offsets spanning the track, generalizing
+    _sample_offsets' fixed beginning/middle/end to N points. Degrades
+    gracefully (dedup) for short tracks, same as _sample_offsets.
+    """
+    latest_start = max(0.0, track_duration_sec - window)
+    span_start = min(min_offset, latest_start)
+    if num_checkpoints <= 1 or latest_start <= span_start:
+        return [round(span_start, 2)]
+    step = (latest_start - span_start) / (num_checkpoints - 1)
+    offsets = [span_start + i * step for i in range(num_checkpoints)]
+    return sorted({round(o, 2) for o in offsets})
+
+
+async def sample_track_checkpoints(
+    streaming_url: str,
+    *,
+    track_duration_sec: float,
+    bitrate_kbps: float = DEFAULT_MP3_BITRATE_KBPS,
+    min_offset: float = DEFAULT_MIN_OFFSET_SEC,
+    window: float = DEFAULT_SAMPLE_WINDOW_SEC,
+    suffix: str = ".mp3",
+    headers: dict[str, str] | None = None,
+) -> list[AudioFeatures]:
+    """Like sample_track(), but (a) scales checkpoint count with track
+    duration instead of a fixed 3, and (b) returns the raw per-checkpoint
+    samples with NO aggregation -- callers decide how to reduce them
+    (median, spread, etc.) rather than a silent mean baked in here.
+
+    Built as a separate function, not a change to sample_track()/
+    _sample_offsets() -- those feed the deployed kinetic_energy/valence
+    DEAM regressions as an input feature (fixed-3-point .aggregated), and
+    changing their sampling shifts the distribution those models were fit
+    against without a re-fit (decision 9e863466's blast-radius boundary,
+    established for the same reason when the tempo_bpm calibration path
+    was built). This function is calibration-only.
+    """
+    num_checkpoints = _checkpoint_count(track_duration_sec)
+    offsets = _checkpoint_offsets(track_duration_sec, min_offset, window, num_checkpoints)
+    furthest_point = offsets[-1] + window
+    range_bytes = estimate_bytes_for_seconds(furthest_point, bitrate_kbps)
+    path = await download_stream(
+        streaming_url, suffix=suffix, headers=headers, range_bytes=range_bytes
+    )
+    try:
+        return [analyze_file(path, offset=o, max_duration=window) for o in offsets]
+    finally:
+        path.unlink(missing_ok=True)

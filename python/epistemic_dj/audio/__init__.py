@@ -11,6 +11,7 @@ from epistemic_dj.audio.analysis import (
     analyze_track,
     download_stream,
     sample_track,
+    sample_track_checkpoints,
 )
 from epistemic_dj.audio.mapping import audio_features_to_vectors
 
@@ -21,4 +22,5 @@ __all__ = [
     "audio_features_to_vectors",
     "download_stream",
     "sample_track",
+    "sample_track_checkpoints",
 ]

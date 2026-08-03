@@ -10,12 +10,22 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from statistics import median
 
+import librosa
 from bandcamp_async_api.models import CollectionItem, SearchResultItem
 from mcp.server.fastmcp import FastMCP
 
-from epistemic_dj.audio import audio_features_to_vectors, sample_track, sample_track_checkpoints
+from epistemic_dj.audio import (
+    audio_features_to_vectors,
+    download_stream,
+    estimate_bytes_for_seconds,
+    load_audio_window,
+    sample_track,
+    sample_track_checkpoints,
+)
+from epistemic_dj.audio.analysis import DEFAULT_MP3_BITRATE_KBPS
 from epistemic_dj.bandcamp.adapter import collection_item_to_track
 from epistemic_dj.bandcamp.client import (
     MissingIdentityTokenError,
@@ -29,6 +39,7 @@ from epistemic_dj.calibration import (
     CalibrationStore,
 )
 from epistemic_dj.embedding import predicted_kinetic_energy_from_tags, tag_taste_similarity
+from epistemic_dj.mixing import beat_alignment_score, overlay, time_stretch_to_tempo, write_render
 from epistemic_dj.models import (
     BrierResult,
     ConsumptionMode,
@@ -45,8 +56,10 @@ from epistemic_dj.youtube import get_playlist_tracks as youtube_get_playlist_tra
 from epistemic_dj.youtube import get_subscribed_artists as youtube_get_subscribed_artists_impl
 from epistemic_dj.youtube import measure_track as youtube_measure_track
 from epistemic_dj.youtube import measure_track_checkpoints as youtube_measure_track_checkpoints
+from epistemic_dj.youtube import resolve_stream as youtube_resolve_stream
 from epistemic_dj.youtube import search as youtube_search
 from epistemic_dj.youtube import search_result_to_track as youtube_search_result_to_track
+from epistemic_dj.youtube.client import DEFAULT_BITRATE_KBPS
 
 mcp = FastMCP("epistemic-dj")
 
@@ -702,6 +715,103 @@ def taste_save_mixtape(user_id: str, mode: str, tracks: list[CuratedTrack]) -> M
         tracks=tracks,
     )
     return _taste_store.save_mixtape(mixtape)
+
+
+RENDER_OUTPUT_DIR = Path(__file__).parent.parent / "renders"
+RENDER_WINDOW_OFFSET_SEC = 45.0  # matches the existing min-offset convention (avoid slow intros)
+
+
+async def _download_audio_window(
+    source: str, track_ref: str, *, offset_sec: float, duration: float
+):
+    """Downloads just enough of the stream to cover offset_sec+duration and
+    loads that window as a real numpy array -- the actual audio to be
+    rendered, not a feature summary. Reuses the same Range-request sizing
+    as the checkpoint measurement path (_measure_tempo_checkpoints).
+    """
+    if source == "bandcamp":
+        artist_id_str, track_id_str = track_ref.split(":")
+        async with managed_client() as client:
+            track = await client.get_track(int(artist_id_str), int(track_id_str))
+        if not track.streaming_url:
+            raise ValueError(f"Track {track_ref} has no streaming_url (not streamable).")
+        url = track.streaming_url.get("mp3-128") or next(iter(track.streaming_url.values()))
+        range_bytes = estimate_bytes_for_seconds(offset_sec + duration, DEFAULT_MP3_BITRATE_KBPS)
+        path = await download_stream(url, range_bytes=range_bytes)
+    elif source == "youtube":
+        stream = youtube_resolve_stream(track_ref)
+        if not stream["duration_sec"]:
+            raise ValueError(f"YouTube video {track_ref} has no known duration.")
+        range_bytes = estimate_bytes_for_seconds(
+            offset_sec + duration, stream["abr_kbps"] or DEFAULT_BITRATE_KBPS
+        )
+        path = await download_stream(
+            stream["url"], suffix=f".{stream['ext']}",
+            headers=stream["headers"], range_bytes=range_bytes,
+        )
+    else:
+        raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
+    try:
+        return load_audio_window(path, offset=offset_sec, duration=duration)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@mcp.tool()
+async def render_mashup(
+    source: str,
+    track_ref_a: str,
+    track_ref_b: str,
+    output_name: str,
+    render_duration: float = 30.0,
+    offset_sec: float = RENDER_WINDOW_OFFSET_SEC,
+) -> dict:
+    """Phase 3 of the mixing-engine roadmap: the first real render. Downloads
+    a contiguous window (default 30s, starting at offset_sec to skip a
+    slow/quiet intro -- same convention as sample_track's min_offset) from
+    BOTH tracks, time-stretches track B to track A's real measured tempo
+    (audio-grounded via the multi-checkpoint pipeline -- never a guess),
+    overlays them, writes a real WAV file, and computes a genuine
+    alignment-quality score from the actual rendered audio (see
+    mixing.render.beat_alignment_score).
+
+    track_ref_a is the tempo target (unchanged); track_ref_b is stretched
+    to match. Both must share `source` (bandcamp or youtube) -- cross-source
+    mashups aren't wired yet. Output written to epistemic-dj/renders/.
+
+    This does NOT yet close a predict/measure/resolve calibration loop for
+    alignment quality (that's the natural next increment) -- this call
+    proves the render mechanism itself works end-to-end on real audio.
+    """
+    tempo_checkpoints_a = await _measure_tempo_checkpoints(source, track_ref_a, 45.0)
+    tempo_checkpoints_b = await _measure_tempo_checkpoints(source, track_ref_b, 45.0)
+    bpm_a = _tempo_point_estimate(tempo_checkpoints_a, track_ref=track_ref_a)
+    bpm_b = _tempo_point_estimate(tempo_checkpoints_b, track_ref=track_ref_b)
+
+    y_a, sr_a = await _download_audio_window(
+        source, track_ref_a, offset_sec=offset_sec, duration=render_duration
+    )
+    y_b, sr_b = await _download_audio_window(
+        source, track_ref_b, offset_sec=offset_sec, duration=render_duration
+    )
+    if sr_a != sr_b:
+        y_b = librosa.resample(y_b, orig_sr=sr_b, target_sr=sr_a)
+
+    y_b_stretched = time_stretch_to_tempo(y_b, source_bpm=bpm_b, target_bpm=bpm_a)
+    mixed = overlay(y_a, y_b_stretched)
+    alignment = beat_alignment_score(y_a, y_b_stretched, sr_a)
+
+    RENDER_OUTPUT_DIR.mkdir(exist_ok=True)
+    output_path = RENDER_OUTPUT_DIR / f"{output_name}.wav"
+    write_render(output_path, mixed, sr_a)
+
+    return {
+        "output_path": str(output_path),
+        "bpm_a": bpm_a,
+        "bpm_b": bpm_b,
+        "target_bpm": bpm_a,
+        "alignment": alignment,
+    }
 
 
 def main() -> None:

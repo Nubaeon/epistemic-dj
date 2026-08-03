@@ -80,6 +80,18 @@ async def download_stream(
     return path
 
 
+def load_audio_window(
+    path: Path, *, offset: float = 0.0, duration: float = 30.0
+) -> tuple[np.ndarray, int]:
+    """Loads a contiguous window of real audio for RENDERING (mixing.render)
+    -- not feature extraction (see analyze_file for that). Separate function
+    so mixing/render.py's DSP stays independent of analyze_file's feature
+    computation.
+    """
+    y, sr = librosa.load(str(path), offset=offset, duration=duration, mono=True)
+    return y, sr
+
+
 def analyze_file(path: Path, *, offset: float = 0.0, max_duration: float = 60.0) -> AudioFeatures:
     y, sr = librosa.load(str(path), offset=offset, duration=max_duration, mono=True)
 

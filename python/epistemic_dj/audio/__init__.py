@@ -10,6 +10,8 @@ from epistemic_dj.audio.analysis import (
     SampledAudioFeatures,
     analyze_track,
     download_stream,
+    estimate_bytes_for_seconds,
+    load_audio_window,
     sample_track,
     sample_track_checkpoints,
 )
@@ -21,6 +23,8 @@ __all__ = [
     "analyze_track",
     "audio_features_to_vectors",
     "download_stream",
+    "estimate_bytes_for_seconds",
+    "load_audio_window",
     "sample_track",
     "sample_track_checkpoints",
 ]

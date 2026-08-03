@@ -880,6 +880,7 @@ async def render_stem_mashup(
     render_duration: float = 30.0,
     offset_sec: float = RENDER_WINDOW_OFFSET_SEC,
     device: str = "cuda",
+    auto_align: bool = True,
 ) -> dict:
     """Phase 4 of the mixing-engine roadmap: the actual mashup capability
     (vocals from one track over the instrumental of another) real Demucs
@@ -889,15 +890,25 @@ async def render_stem_mashup(
     tempo target; the vocal stem is time-stretched to match, same
     beatmatch/overlay/alignment mechanics as render_mashup.
 
+    David listened to the first real output and confirmed the separation
+    + overlay mechanism itself is right -- the only issue was tempo/beat
+    alignment precision (empirica finding cb5c6b33), exactly what
+    auto_align addresses here, mirroring render_mashup's own naive+aligned
+    pattern: after the naive render, use beat_alignment_score's own
+    best_lag_sec to re-separate the vocals track at a corrected offset
+    and render a second version. Writes BOTH
+    '{output_name}_naive.wav' and '{output_name}_aligned.wav'. This
+    re-runs Demucs separation on the vocals track a second time (real GPU
+    cost, not free) -- the instrumental is separated only once since it's
+    the fixed tempo target and doesn't need re-aligning.
+
     Requires the `separation` extra (`uv sync --extra separation`) --
     lazy-imported, so the rest of the server works without it. device:
     'cuda' by default -- CPU separation is realistically minutes per
     track, not the interactive-feeling tool this needs to be.
 
     Both tracks must share `source` (bandcamp or youtube). Output written
-    to epistemic-dj/renders/{output_name}.wav. No auto-alignment pass yet
-    (unlike render_mashup) -- that's the natural next increment here too,
-    not assumed to transfer automatically from the full-track case.
+    to epistemic-dj/renders/.
     """
     tempo_checkpoints_vocals = await _measure_tempo_checkpoints(source, track_ref_vocals, 45.0)
     tempo_checkpoints_instr = await _measure_tempo_checkpoints(
@@ -907,37 +918,51 @@ async def render_stem_mashup(
     bpm_instrumental = _tempo_point_estimate(
         tempo_checkpoints_instr, track_ref=track_ref_instrumental
     )
+    stretch_rate = bpm_instrumental / bpm_vocals
 
-    stems_vocals, sr_vocals = await _separate_track_stems(
-        source, track_ref_vocals, offset_sec=offset_sec, duration=render_duration, device=device
-    )
     stems_instr, sr_instr = await _separate_track_stems(
         source, track_ref_instrumental,
         offset_sec=offset_sec, duration=render_duration, device=device,
     )
-
-    vocals = stems_vocals["vocals"]
     instrumental = _instrumental_from_stems(stems_instr)
-    if sr_vocals != sr_instr:
-        vocals = librosa.resample(vocals, orig_sr=sr_vocals, target_sr=sr_instr)
 
-    vocals_stretched = time_stretch_to_tempo(
-        vocals, source_bpm=bpm_vocals, target_bpm=bpm_instrumental
-    )
-    mixed = overlay(instrumental, vocals_stretched)
-    alignment = beat_alignment_score(instrumental, vocals_stretched, sr_instr)
+    async def _render_at(vocals_offset_sec: float, suffix: str) -> dict:
+        stems_vocals, sr_vocals = await _separate_track_stems(
+            source, track_ref_vocals,
+            offset_sec=vocals_offset_sec, duration=render_duration, device=device,
+        )
+        vocals = stems_vocals["vocals"]
+        if sr_vocals != sr_instr:
+            vocals = librosa.resample(vocals, orig_sr=sr_vocals, target_sr=sr_instr)
+        vocals_stretched = time_stretch_to_tempo(
+            vocals, source_bpm=bpm_vocals, target_bpm=bpm_instrumental
+        )
+        mixed = overlay(instrumental, vocals_stretched)
+        alignment = beat_alignment_score(instrumental, vocals_stretched, sr_instr)
 
-    RENDER_OUTPUT_DIR.mkdir(exist_ok=True)
-    output_path = RENDER_OUTPUT_DIR / f"{output_name}.wav"
-    write_render(output_path, mixed, sr_instr)
+        RENDER_OUTPUT_DIR.mkdir(exist_ok=True)
+        path = RENDER_OUTPUT_DIR / f"{output_name}_{suffix}.wav"
+        write_render(path, mixed, sr_instr)
+        return {
+            "output_path": str(path),
+            "vocals_offset_sec": vocals_offset_sec,
+            "alignment": alignment,
+        }
 
-    return {
-        "output_path": str(output_path),
+    naive = await _render_at(offset_sec, "naive")
+    result = {
         "bpm_vocals": bpm_vocals,
         "bpm_instrumental": bpm_instrumental,
         "target_bpm": bpm_instrumental,
-        "alignment": alignment,
+        "naive": naive,
     }
+
+    if auto_align:
+        best_lag_sec = naive["alignment"]["best_lag_sec"]
+        corrected_offset = max(0.0, offset_sec + best_lag_sec / stretch_rate)
+        result["aligned"] = await _render_at(corrected_offset, "aligned")
+
+    return result
 
 
 def main() -> None:

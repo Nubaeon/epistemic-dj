@@ -128,7 +128,60 @@ def test_instrumental_from_stems_sums_non_vocal_layers():
     assert instrumental == pytest.approx(np.array([6.0, 6.0]))
 
 
-async def test_render_stem_mashup_overlays_vocals_on_instrumental(monkeypatch, tmp_path):
+async def test_render_stem_mashup_auto_align_writes_naive_and_aligned_files(monkeypatch, tmp_path):
+    async def fake_measure_checkpoints(source, track_ref, max_duration):
+        return {"vidVocals": [120.0], "vidInstr": [130.0]}[track_ref]
+
+    monkeypatch.setattr(server, "_measure_tempo_checkpoints", fake_measure_checkpoints)
+
+    sr = 22050
+    n = sr * 5
+    rng = np.random.RandomState(0)
+    requested_offsets = []
+
+    async def fake_separate(source, track_ref, *, offset_sec, duration, device="cuda"):
+        requested_offsets.append((track_ref, offset_sec))
+        # Real separate_stems always returns all 4 stems -- mock matches that.
+        return {
+            "vocals": (rng.randn(n) * 0.1).astype(np.float32),
+            "drums": (rng.randn(n) * 0.1).astype(np.float32),
+            "bass": (rng.randn(n) * 0.1).astype(np.float32),
+            "other": (rng.randn(n) * 0.1).astype(np.float32),
+        }, sr
+
+    monkeypatch.setattr(server, "_separate_track_stems", fake_separate)
+    monkeypatch.setattr(server, "RENDER_OUTPUT_DIR", tmp_path)
+    # Deterministic nonzero lag -- orchestration test, not DSP correctness
+    # (already covered by test_mixing_render.py's synthetic click tracks).
+    monkeypatch.setattr(
+        server, "beat_alignment_score",
+        lambda y_a, y_b, sr: {"score_at_zero_lag": 0.1, "best_score": 0.6, "best_lag_sec": 2.0},
+    )
+
+    result = await server.render_stem_mashup(
+        source="youtube", track_ref_vocals="vidVocals", track_ref_instrumental="vidInstr",
+        output_name="stem_test", render_duration=5.0, offset_sec=10.0,
+    )
+
+    assert result["bpm_vocals"] == pytest.approx(120.0)
+    assert result["bpm_instrumental"] == pytest.approx(130.0)
+    assert result["target_bpm"] == pytest.approx(130.0)
+    assert "naive" in result and "aligned" in result
+    assert Path(result["naive"]["output_path"]).exists()
+    assert Path(result["aligned"]["output_path"]).exists()
+    assert result["naive"]["output_path"].endswith("stem_test_naive.wav")
+    assert result["aligned"]["output_path"].endswith("stem_test_aligned.wav")
+
+    # instrumental separated once (fixed target); vocals separated twice
+    # (naive offset + corrected offset) -- the correction was actually applied.
+    assert len([o for ref, o in requested_offsets if ref == "vidInstr"]) == 1
+    vocals_offsets = [o for ref, o in requested_offsets if ref == "vidVocals"]
+    assert len(vocals_offsets) == 2
+    assert vocals_offsets[0] == pytest.approx(10.0)
+    assert vocals_offsets[1] != pytest.approx(10.0)
+
+
+async def test_render_stem_mashup_auto_align_false_skips_second_pass(monkeypatch, tmp_path):
     async def fake_measure_checkpoints(source, track_ref, max_duration):
         return {"vidVocals": [120.0], "vidInstr": [130.0]}[track_ref]
 
@@ -139,7 +192,6 @@ async def test_render_stem_mashup_overlays_vocals_on_instrumental(monkeypatch, t
     rng = np.random.RandomState(0)
 
     async def fake_separate(source, track_ref, *, offset_sec, duration, device="cuda"):
-        # Real separate_stems always returns all 4 stems -- mock matches that.
         return {
             "vocals": (rng.randn(n) * 0.1).astype(np.float32),
             "drums": (rng.randn(n) * 0.1).astype(np.float32),
@@ -152,12 +204,9 @@ async def test_render_stem_mashup_overlays_vocals_on_instrumental(monkeypatch, t
 
     result = await server.render_stem_mashup(
         source="youtube", track_ref_vocals="vidVocals", track_ref_instrumental="vidInstr",
-        output_name="stem_test", render_duration=5.0,
+        output_name="stem_test2", render_duration=5.0, auto_align=False,
     )
 
-    assert result["bpm_vocals"] == pytest.approx(120.0)
-    assert result["bpm_instrumental"] == pytest.approx(130.0)
-    assert result["target_bpm"] == pytest.approx(130.0)
-    assert "alignment" in result
-    assert Path(result["output_path"]).exists()
-    assert result["output_path"].endswith("stem_test.wav")
+    assert "naive" in result
+    assert "aligned" not in result
+    assert not (tmp_path / "stem_test2_aligned.wav").exists()

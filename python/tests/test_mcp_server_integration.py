@@ -59,6 +59,7 @@ async def test_all_expected_tools_are_registered():
         "youtube_get_playlist_tracks",
         "calibration_predict",
         "calibration_predict_from_tags",
+        "calibration_predict_tempo",
         "calibration_resolve",
         "calibration_brier",
         "calibration_list_predictions",

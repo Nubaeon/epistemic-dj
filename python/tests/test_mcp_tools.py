@@ -284,6 +284,55 @@ async def test_calibration_resolve_dispatches_youtube_measurement(monkeypatch):
     assert resolved.verified is False  # 0.9 predicted vs. a slow/low-energy measurement
 
 
+async def test_calibration_predict_tempo_measures_real_short_excerpt(monkeypatch):
+    # The corrected path (David's correction, 2026-08-03): predicted_value
+    # must come from a real audio excerpt, never title/genre text.
+    from epistemic_dj.audio.analysis import AudioFeatures, SampledAudioFeatures
+
+    seen_durations = []
+
+    async def fake_measure_track(video_id, *, max_duration=60.0):
+        seen_durations.append(max_duration)
+        features = AudioFeatures(
+            tempo_bpm=128.0, rms_energy=0.15, spectral_centroid_hz=2000.0,
+            onset_density_per_sec=4.0, duration_analyzed_sec=max_duration,
+            beat_interval_cv=0.05, spectral_bandwidth_hz=2000.0,
+        )
+        return SampledAudioFeatures(aggregated=features, samples=[features])
+
+    monkeypatch.setattr(server, "youtube_measure_track", fake_measure_track)
+
+    prediction = await server.calibration_predict_tempo(
+        source="youtube", track_ref="vid1", track_name="X", term="artist_x",
+    )
+
+    assert prediction.quantity == "tempo_bpm"
+    assert prediction.predicted_value == pytest.approx(128.0)
+    # uninformative prior for a fresh 'tempo_short_excerpt' bucket -> 0.5
+    assert prediction.confidence == pytest.approx(0.5)
+    # excerpt_duration default -- cheap, distinct from calibration_resolve's fuller default
+    assert seen_durations == [server.CHEAP_TEMPO_EXCERPT_DURATION]
+
+
+async def test_calibration_predict_tempo_bandcamp_path_uses_excerpt_duration(monkeypatch):
+    seen_durations = []
+
+    async def fake_audio_analyze_track(artist_id, track_id, max_duration=60.0):
+        seen_durations.append(max_duration)
+        return {"features": {"aggregated": {"tempo_bpm": 96.0}}, "vectors": {}}
+
+    monkeypatch.setattr(server, "audio_analyze_track", fake_audio_analyze_track)
+
+    prediction = await server.calibration_predict_tempo(
+        source="bandcamp", track_ref="1:2", track_name="X", term="artist_y",
+        confidence_bucket=None,
+    )
+
+    assert prediction.predicted_value == pytest.approx(96.0)
+    assert prediction.confidence == pytest.approx(0.5)  # confidence_bucket=None -> default 0.5
+    assert seen_durations == [server.CHEAP_TEMPO_EXCERPT_DURATION]
+
+
 async def test_calibration_resolve_dispatches_tempo_quantity_via_youtube(monkeypatch):
     prediction = server.calibration_predict(
         source="youtube", track_ref="videoid456", track_name="Y", term="t",

@@ -329,9 +329,18 @@ def calibration_predict(
     judgment call about THIS track -- never derived from a lookup table or
     string-matched category (that's just a heuristic algorithm wearing an
     AI-shaped costume, not the holistic judgment this path exists for).
-    This applies to every quantity, not just kinetic_energy -- e.g. a
-    predicted tempo_bpm must be reasoned from real per-track signal
-    (title/tag/genre cues), not a bare genre-average lookup.
+
+    This path is for genuinely SUBJECTIVE/PERCEPTUAL quantities only
+    (kinetic_energy-like: "how would this feel"), where a knowledgeable
+    holistic read -- informed by real listening/artist history, not title
+    text -- is legitimately the best pre-audio estimate available.
+    NEVER use it for objectively-measurable physical quantities (tempo,
+    key, etc.) -- there, "reasoning from the title/genre" is just a
+    heuristic lookup wearing an AI costume, not judgment (David's
+    correction, 2026-08-03, empirica mistake b54d3bba: "track names and
+    even categories are unreliable ... only checking the actual track
+    itself will lead to correct hits"). Use calibration_predict_tempo
+    (real short-excerpt audio measurement) for tempo_bpm instead.
 
     quantity: what predicted_value actually measures. "kinetic_energy"
     (default) is [0,1]-scaled and resolves via MusicVectors. Other
@@ -344,7 +353,7 @@ def calibration_predict(
     (CalibrationStore.get_hit_rate) -- the same closed-loop mechanism
     calibration_predict_from_tags uses for margin-strength buckets, applied
     here to whatever repeatable classification of judgment call this is
-    (e.g. 'manual_energy_cluster', 'manual_underlay', 'tempo_genre_typical').
+    (e.g. 'manual_energy_cluster', 'manual_underlay').
     This is a distinct question from predicted_value: it's "how reliable
     has this KIND of call been," not a substitute for reasoning about the
     track itself. Omit for a one-off call with no natural repeatable
@@ -361,6 +370,56 @@ def calibration_predict(
 
 
 TEMPO_TOLERANCE_BPM = 5.0
+CHEAP_TEMPO_EXCERPT_DURATION = 12.0
+
+
+@mcp.tool()
+async def calibration_predict_tempo(
+    source: str,
+    track_ref: str,
+    track_name: str,
+    term: str,
+    practitioner_id: str = "default",
+    confidence_bucket: str | None = "tempo_short_excerpt",
+    excerpt_duration: float = CHEAP_TEMPO_EXCERPT_DURATION,
+) -> TrackPrediction:
+    """The ONLY correct way to predict tempo_bpm -- from a real, short/cheap
+    audio excerpt of THIS track, never from its title/tags/genre (David's
+    correction, 2026-08-03: 'track names and even categories are unreliable
+    ... only checking the actual track itself will lead to correct hits' --
+    see empirica mistake b54d3bba, this session's second run-in with the
+    same heuristic-lookup anti-pattern first rejected for kinetic_energy).
+
+    predicted_value is the genuinely-measured tempo_bpm of a short
+    (excerpt_duration-per-window, default 12s) analysis pass -- cheap
+    relative to calibration_resolve's fuller default (45s per window), but
+    still real audio, not a guess. confidence comes from confidence_bucket's
+    real Bayesian hit-rate (same closed-loop mechanism as calibration_predict),
+    self-calibrating how often a cheap excerpt agrees with the fuller
+    analysis -- exactly the kind of fast-triage-vs-expensive-verify signal
+    genuinely worth having for scanning many mix candidates.
+    """
+    if source == "bandcamp":
+        artist_id_str, track_id_str = track_ref.split(":")
+        result = await audio_analyze_track(
+            artist_id=int(artist_id_str), track_id=int(track_id_str), max_duration=excerpt_duration
+        )
+        predicted_bpm = result["features"]["aggregated"]["tempo_bpm"]
+    elif source == "youtube":
+        features = await youtube_measure_track(track_ref, max_duration=excerpt_duration)
+        predicted_bpm = features.aggregated.tempo_bpm
+    else:
+        raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
+
+    confidence = (
+        _calibration_store.get_hit_rate(confidence_bucket).mean if confidence_bucket else 0.5
+    )
+    return _calibration_store.log_prediction(
+        source=source, track_ref=track_ref, track_name=track_name, term=term,
+        predicted_value=predicted_bpm, confidence=confidence,
+        practitioner_id=practitioner_id, confidence_bucket=confidence_bucket,
+        quantity="tempo_bpm",
+    )
 
 
 @mcp.tool()

@@ -86,11 +86,13 @@ playlist.
 
 ## Source-agnostic by design
 
-Bandcamp is ingestion adapter #1, not a foundation dependency. `Track.source`
-is a string, not an enum tied to one platform — a future SoundCloud or
-local-file adapter slots in the same way. This matters for the mesh-sharing
-case too: a shared mixtape shouldn't assume everyone bought from the same
-platform.
+Bandcamp was ingestion adapter #1; YouTube Music is adapter #2 (real,
+shipped — search, playlists, subscriptions, and audio measurement via
+`ytmusicapi` + `yt-dlp`, browser-header auth mirroring Bandcamp's
+cookie pattern). `Track.source` is a string, not an enum tied to one
+platform — a future SoundCloud or local-file adapter slots in the same
+way. This matters for the mesh-sharing case too: a shared mixtape
+shouldn't assume everyone bought from the same platform.
 
 ## Build-vs-integrate research summary
 
@@ -102,7 +104,7 @@ Empirica. Headline calls:
 | Bandcamp access | Integrate `bandcamp_async_api` or `bandcamp-fetch` (cookie-auth) — no official API covers personal collections. **Verify the lossless-download path early**; the private collection-sync API is lossy MP3-V0 only. |
 | Stem separation | Use `ZFTurbo/Music-Source-Separation-Training` (unified surface, MIT) instead of hand-picking bare Demucs — Demucs is no longer SOTA. |
 | `.stem.mp4` | Don't chase strict NI/Traktor byte-compatibility unless hardware interop is a confirmed need — the ecosystem (stemgen, Mixxx) is already drifting to simpler lossless containers. |
-| Consumer stem-remix apps | **Don't build one.** Real-time GPU stem separation is now standard across every major DJ platform (2025-2026). Differentiation lives entirely in curation/economics/UX, not separation tech. |
+| Consumer stem-remix apps | **Don't build a real-time performance tool** (djay, Serato, Traktor already do live GPU stem separation better than we would). **Do build offline, calibrated mashup rendering** (decision d55de6e8, 2026-08-03) — the differentiator is an AI doing the beatmatch/overlay judgment in advance, grounded in real measurement of the actual tracks, not curation/economics/UX layered on someone else's separation tech. |
 | Taste profiling | Genuinely close to greenfield for the Bandcamp-specific, artifact-driven angle. Watch for the documented LLM-taste-profile bias risk (genre/origin skew) — the artifact-substrate approach sidesteps it by construction (interpretable by design, not bolted on). |
 | Direct-to-artist economics | The Web3/NFT "bypass streaming" thesis failed outright 2021-2026. Anchor to plain Bandcamp-purchase economics, not any ownership/token framing. |
 
@@ -148,6 +150,52 @@ unaffected; that's orthogonal to what ships. Phase A (Bandcamp + YouTube
 Music, single practitioner) is specced for build; Phase C (parallel
 practitioners on the shared store) is design-level with named open
 questions.
+
+## Mixing engine: from cataloguing to actual mashup rendering
+
+Scope expansion (decision d55de6e8, 2026-08-03): epistemic-dj generalizes
+beyond cataloguing/predicting/curating tracks into actual audio
+composition — overlay/beatmatch/mix multiple tracks, export the result.
+David's own taste is the baseline test corpus, not the product's end
+scope. Phased, YouTube first (Bandcamp export/upload last — no confirmed
+public upload API yet), each phase closes its own predict/measure/resolve
+loop rather than shipping unverified:
+
+- **Phase 1 (done)** — generalized `CalibrationStore` beyond
+  `kinetic_energy` to arbitrary quantities (`quantity` column, generic
+  `predicted_value`/`measured_value`). Tempo (BPM) predicted from a real
+  short audio excerpt, resolved against a fuller one — same mechanism,
+  new quantity. Corrected mid-phase: an early version predicted tempo
+  from track title/genre text, which is the same heuristic-lookup
+  anti-pattern already rejected for `kinetic_energy` (empirica mistake
+  b54d3bba) — **every prediction, including the "cheap" side of a
+  predict/measure pair, must come from real audio, never metadata.**
+- **Phase 1.5 (done)** — multi-checkpoint measurement (pre/check/post,
+  more checkpoints for long material) replacing single-scalar-per-tier
+  tempo reads, so within-track tempo instability (e.g. dynamic/DNB-style
+  tracks) is visible instead of silently averaged away.
+- **Phase 2 (done)** — pairwise tempo-compatibility: octave-normalized
+  (1x/2x/0.5x, standard DJ half/double-time convention) percent-difference
+  between two tracks' real measured tempos.
+- **Phase 3 (done)** — first real renders (`mixing/render.py`):
+  pitch-preserving time-stretch (librosa phase vocoder) + overlay, with a
+  genuine alignment-quality metric (cross-correlation of onset-strength
+  envelopes, not a guess). First real render revealed naive same-offset
+  overlay can land two different tracks badly out of phase (no reason
+  their downbeats coincide just because download started at the same
+  wall-clock offset) — `render_mashup` now auto-corrects using its own
+  alignment signal and writes both naive/aligned versions for direct
+  comparison. One correction step measurably helps but doesn't fully
+  converge — iterative refinement, not a one-shot claim.
+- **Phase 4 (next)** — stem separation (Demucs/`stemgen`, chosen in the
+  earlier build-vs-integrate research — see table above) + selective
+  stem overlay (e.g. vocals-over-instrumental), the actual mashup
+  capability building on Phase 3's alignment mechanics.
+- **Phase 5** — YouTube upload pipeline. **Phase 6** — Bandcamp
+  (lowest priority, no confirmed public upload API).
+
+Full detail (goal `b3711ec6`, findings, and the corrected-methodology
+discussion): `empirica project-search --task "mixing engine roadmap"`.
 
 ## Deferred (real direction, not current scope)
 

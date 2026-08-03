@@ -22,7 +22,7 @@ this" and get a real answer, not a shrug.
 
 Because it's portable, your taste profile isn't locked into one app either.
 It can:
-- Curate and rank tracks from Bandcamp (or any future source)
+- Curate and rank tracks from Bandcamp and YouTube (or any future source)
 - Drive a DJ set or focus-session playlist
 - Be exported as a seed for prosumer creation tools like [strudel.cc](https://strudel.cc)
 - Be **shared** — a curated mixtape carries the *why* along with the tracks,
@@ -32,19 +32,25 @@ It can:
 ## Where it's going
 
 Three tracks, roughly in order:
-1. **Bandcamp integration** — connect your purchased collection
+1. **Source integration** — connect your purchased Bandcamp collection and
+   your YouTube library/playlists
 2. **Taste profiling** — an onboarding interview (including humming/whistling
    what you're after, not just picking tags) that builds your profile
-3. **Curation & mixing** — an AI that discriminates what you'd want, builds
-   sets, and (later) drives prosumer hardware — mixers, controllers,
-   embedded gear — so you choose the material and the engineering judgment
-   calls, and the AI drives execution
+3. **Curation & mashup rendering** — an AI that discriminates what you'd
+   want, builds sets, and generates actual mashups (stem-level overlay,
+   beatmatched, tempo/key-aware) grounded in a calibrated understanding of
+   the tracks — not a lookup table, an actual predict → measure → resolve
+   loop the same way an Empirica AI practice calibrates its own work
 
-We deliberately don't compete with DJ software (Traktor, Serato, VirtualDJ
-already do real-time stem separation better than we ever will) or with
-professional production tools. The product is taste curation and
-portability, not another mixer or another DAW.
+**What we're not building:** real-time DJ-booth performance software.
+Traktor, Serato, VirtualDJ already do live stem separation and beatmatching
+better than we ever will, and that's not the point — the point is an AI
+that does the engineering judgment *in advance*, grounded in real
+measurement of the actual tracks (never metadata/genre guessing), and
+hands you a finished, explainable mashup. Offline, calibrated composition,
+not another mixer. Later: drive prosumer hardware (controllers, embedded
+gear) so you choose the material and the AI executes.
 
-See [`docs/human/setup.md`](setup.md) to connect your own Bandcamp
-collection, [`docs/dev/architecture.md`](../dev/architecture.md) for the
+See [`docs/human/setup.md`](setup.md) to connect your own Bandcamp/YouTube
+sources, [`docs/dev/architecture.md`](../dev/architecture.md) for the
 technical design, or `AUTONOMY_BRIEFING.md` for the original MVP scope.

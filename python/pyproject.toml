@@ -39,6 +39,7 @@ separation = [
     # Stem separation deps are heavy (torch etc.) and GPU-dependent -- kept
     # optional so `uv sync` stays fast for anyone just working on the
     # Bandcamp/taste-profiling layers. Install with `uv sync --extra separation`.
+    "demucs>=4.1.0",
 ]
 
 [dependency-groups]

@@ -29,7 +29,7 @@
     "ai-composition",
     "llm-music"
   ],
-  "author": "Nubaeon",
+  "author": "david@getempirica.com",
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

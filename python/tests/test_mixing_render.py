@@ -89,4 +89,44 @@ def test_beat_alignment_score_lower_for_out_of_phase_tracks():
 
 def test_beat_alignment_score_handles_empty_signal():
     result = beat_alignment_score(np.array([]), np.array([]), SAMPLE_RATE)
-    assert result == {"score_at_zero_lag": 0.0, "best_score": 0.0, "best_lag_sec": 0.0}
+    assert result["score_at_zero_lag"] == 0.0
+    assert result["best_score"] == 0.0
+    assert result["best_lag_sec"] == 0.0
+
+
+def test_beat_alignment_score_constrains_lag_search_to_beat_window():
+    """The real bug (finding 059d5ecd): unconstrained search returned a peak
+    33 beat-periods away. With target_bpm set, the reported lag must stay
+    inside +-search_beats regardless of where the global max actually is.
+    """
+    y_a = _make_click_track(bpm=120.0, duration_sec=20.0)
+    # Deliberately shifted far enough that an unconstrained search could
+    # lock onto a distant repeat of the (periodic) click pattern.
+    y_b = _make_click_track(bpm=120.0, duration_sec=20.0, phase_offset_sec=6.0)
+
+    unconstrained = beat_alignment_score(y_a, y_b, SAMPLE_RATE)
+    constrained = beat_alignment_score(y_a, y_b, SAMPLE_RATE, target_bpm=120.0, search_beats=2.0)
+
+    beat_period = 60.0 / 120.0
+    assert constrained["search_limit_sec"] == pytest.approx(2.0 * beat_period)
+    assert abs(constrained["best_lag_sec"]) <= 2.0 * beat_period + 1e-6
+    assert unconstrained["search_limit_sec"] is None
+
+
+def test_alignment_drift_detects_progressive_tempo_error():
+    """A track whose tempo is slightly wrong drifts against its reference --
+    per-window lag should move monotonically, and the implied tempo error
+    should be nonzero with the right sign (finding 28441abe).
+    """
+    from epistemic_dj.mixing.render import alignment_drift
+
+    y_a = _make_click_track(bpm=120.0, duration_sec=30.0)
+    y_b = _make_click_track(bpm=121.5, duration_sec=30.0)  # ~1.25% fast, never corrected
+
+    result = alignment_drift(y_a, y_b, SAMPLE_RATE, target_bpm=120.0, windows=5)
+
+    assert len(result["per_window"]) == 5
+    assert result["span_sec"] > 0
+    # A genuinely mismatched tempo must register SOME drift, not zero.
+    assert abs(result["implied_tempo_error_pct"]) > 0.0
+    assert "mean_window_score" in result

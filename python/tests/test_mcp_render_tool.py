@@ -35,7 +35,9 @@ async def test_render_mashup_auto_align_writes_naive_and_aligned_files(monkeypat
     # cross-correlation happening to land away from zero.
     monkeypatch.setattr(
         server, "beat_alignment_score",
-        lambda y_a, y_b, sr: {"score_at_zero_lag": 0.1, "best_score": 0.6, "best_lag_sec": 2.0},
+        lambda y_a, y_b, sr, **kw: {
+            "score_at_zero_lag": 0.1, "best_score": 0.6, "best_lag_sec": 2.0,
+        },
     )
 
     result = await server.render_mashup(
@@ -104,7 +106,9 @@ async def test_render_mashup_clamps_corrected_offset_to_nonnegative(monkeypatch,
     # Force a large negative correction that would go below zero.
     monkeypatch.setattr(
         server, "beat_alignment_score",
-        lambda y_a, y_b, sr: {"score_at_zero_lag": 0.0, "best_score": 0.5, "best_lag_sec": -999.0},
+        lambda y_a, y_b, sr, **kw: {
+            "score_at_zero_lag": 0.0, "best_score": 0.5, "best_lag_sec": -999.0,
+        },
     )
     monkeypatch.setattr(server, "RENDER_OUTPUT_DIR", tmp_path)
 
@@ -155,7 +159,9 @@ async def test_render_stem_mashup_auto_align_writes_naive_and_aligned_files(monk
     # (already covered by test_mixing_render.py's synthetic click tracks).
     monkeypatch.setattr(
         server, "beat_alignment_score",
-        lambda y_a, y_b, sr: {"score_at_zero_lag": 0.1, "best_score": 0.6, "best_lag_sec": 2.0},
+        lambda y_a, y_b, sr, **kw: {
+            "score_at_zero_lag": 0.1, "best_score": 0.6, "best_lag_sec": 2.0,
+        },
     )
 
     result = await server.render_stem_mashup(

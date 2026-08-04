@@ -1,4 +1,5 @@
 from epistemic_dj.mixing.render import (
+    alignment_drift,
     beat_alignment_score,
     overlay,
     time_stretch_to_tempo,
@@ -6,6 +7,7 @@ from epistemic_dj.mixing.render import (
 )
 
 __all__ = [
+    "alignment_drift",
     "beat_alignment_score",
     "overlay",
     "time_stretch_to_tempo",

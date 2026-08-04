@@ -39,7 +39,13 @@ from epistemic_dj.calibration import (
     CalibrationStore,
 )
 from epistemic_dj.embedding import predicted_kinetic_energy_from_tags, tag_taste_similarity
-from epistemic_dj.mixing import beat_alignment_score, overlay, time_stretch_to_tempo, write_render
+from epistemic_dj.mixing import (
+    alignment_drift,
+    beat_alignment_score,
+    overlay,
+    time_stretch_to_tempo,
+    write_render,
+)
 from epistemic_dj.models import (
     BrierResult,
     ConsumptionMode,
@@ -840,12 +846,18 @@ async def render_mashup(
             y_b = librosa.resample(y_b, orig_sr=sr_b, target_sr=sr_a)
         y_b_stretched = time_stretch_to_tempo(y_b, source_bpm=bpm_b, target_bpm=bpm_a)
         mixed = overlay(y_a, y_b_stretched)
-        alignment = beat_alignment_score(y_a, y_b_stretched, sr_a)
+        alignment = beat_alignment_score(y_a, y_b_stretched, sr_a, target_bpm=bpm_a)
+        drift = alignment_drift(y_a, y_b_stretched, sr_a, target_bpm=bpm_a)
 
         RENDER_OUTPUT_DIR.mkdir(exist_ok=True)
         path = RENDER_OUTPUT_DIR / f"{output_name}_{suffix}.wav"
         write_render(path, mixed, sr_a)
-        return {"output_path": str(path), "offset_b": offset_b, "alignment": alignment}
+        return {
+            "output_path": str(path),
+            "offset_b": offset_b,
+            "alignment": alignment,
+            "drift": drift,
+        }
 
     naive = await _render_at(offset_sec, "naive")
     result = {"bpm_a": bpm_a, "bpm_b": bpm_b, "target_bpm": bpm_a, "naive": naive}
@@ -938,7 +950,12 @@ async def render_stem_mashup(
             vocals, source_bpm=bpm_vocals, target_bpm=bpm_instrumental
         )
         mixed = overlay(instrumental, vocals_stretched)
-        alignment = beat_alignment_score(instrumental, vocals_stretched, sr_instr)
+        alignment = beat_alignment_score(
+            instrumental, vocals_stretched, sr_instr, target_bpm=bpm_instrumental
+        )
+        drift = alignment_drift(
+            instrumental, vocals_stretched, sr_instr, target_bpm=bpm_instrumental
+        )
 
         RENDER_OUTPUT_DIR.mkdir(exist_ok=True)
         path = RENDER_OUTPUT_DIR / f"{output_name}_{suffix}.wav"
@@ -947,6 +964,7 @@ async def render_stem_mashup(
             "output_path": str(path),
             "vocals_offset_sec": vocals_offset_sec,
             "alignment": alignment,
+            "drift": drift,
         }
 
     naive = await _render_at(offset_sec, "naive")

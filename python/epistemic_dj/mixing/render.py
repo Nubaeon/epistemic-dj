@@ -146,6 +146,8 @@ def alignment_drift(
     target_bpm: float,
     windows: int = 5,
     search_beats: float = DEFAULT_LAG_SEARCH_BEATS,
+    overlap: float = 0.5,
+    confidence_weighted: bool = True,
 ) -> dict:
     """Measures how the best lag MOVES across the render -- the signal a
     single constant offset correction can never fix.
@@ -167,18 +169,29 @@ def alignment_drift(
         return {"per_window": [], "drift_sec": 0.0, "span_sec": 0.0,
                 "implied_tempo_error_pct": 0.0, "mean_window_score": 0.0}
 
+    # `windows` sets the window LENGTH (n/windows); `overlap` sets the hop.
+    # Overlapping gives more fit points WITHOUT shortening each window --
+    # shorter windows would make every individual correlation noisier, which
+    # is the opposite of what a noisy fit needs.
     win = n // windows
+    hop = max(1, int(win * (1.0 - min(max(overlap, 0.0), 0.95))))
     per_window = []
-    for i in range(windows):
-        s, e = i * win, (i + 1) * win
+    s = 0
+    while s + win <= n:
         result = beat_alignment_score(
-            y_a[s:e], y_b[s:e], sr, target_bpm=target_bpm, search_beats=search_beats
+            y_a[s:s + win], y_b[s:s + win], sr,
+            target_bpm=target_bpm, search_beats=search_beats,
         )
         per_window.append({
             "start_sec": s / sr,
             "best_lag_sec": result["best_lag_sec"],
             "best_score": result["best_score"],
         })
+        s += hop
+    if len(per_window) < 2:
+        return {"per_window": per_window, "drift_sec": 0.0, "span_sec": 0.0,
+                "implied_tempo_error_pct": 0.0, "drift_r_squared": 0.0,
+                "mean_window_score": 0.0}
 
     span_sec = per_window[-1]["start_sec"] - per_window[0]["start_sec"]
     times = np.array([w["start_sec"] for w in per_window])
@@ -191,10 +204,22 @@ def alignment_drift(
     # fired on noise and degraded alignment (finding 58bc21e6). r_squared
     # reports how linear the drift actually is, so callers can refuse to
     # act on a fit that is really just scatter.
-    slope, intercept = np.polyfit(times, lags, 1) if len(times) >= 2 else (0.0, 0.0)
+    # Confidence weighting: a window whose onset envelopes barely correlate
+    # gives a less trustworthy argmax than one that correlates strongly, so
+    # it should not pull the slope as hard. Weights are the per-window
+    # correlation scores, floored at 0 (negative correlation carries no
+    # positional information worth trusting).
+    scores = np.array([w["best_score"] for w in per_window])
+    weights = np.clip(scores, 0.0, None) if confidence_weighted else np.ones_like(scores)
+    if not np.any(weights > 0):
+        weights = np.ones_like(scores)
+
+    slope, intercept = np.polyfit(times, lags, 1, w=weights)
     predicted = slope * times + intercept
-    ss_res = float(np.sum((lags - predicted) ** 2))
-    ss_tot = float(np.sum((lags - lags.mean()) ** 2))
+    # Weighted r^2, consistent with the weighted fit.
+    w_mean = float(np.sum(weights * lags) / np.sum(weights))
+    ss_res = float(np.sum(weights * (lags - predicted) ** 2))
+    ss_tot = float(np.sum(weights * (lags - w_mean) ** 2))
     r_squared = (1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
 
     return {

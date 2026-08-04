@@ -125,8 +125,37 @@ def test_alignment_drift_detects_progressive_tempo_error():
 
     result = alignment_drift(y_a, y_b, SAMPLE_RATE, target_bpm=120.0, windows=5)
 
-    assert len(result["per_window"]) == 5
+    # Overlapping windows (default 50%) give MORE fit points than `windows`
+    # without shortening each one -- more data for the slope, same per-window
+    # correlation quality.
+    assert len(result["per_window"]) > 5
     assert result["span_sec"] > 0
     # A genuinely mismatched tempo must register SOME drift, not zero.
     assert abs(result["implied_tempo_error_pct"]) > 0.0
     assert "mean_window_score" in result
+    assert 0.0 <= result["drift_r_squared"] <= 1.0
+
+
+def test_alignment_drift_overlap_zero_gives_non_overlapping_windows():
+    from epistemic_dj.mixing.render import alignment_drift
+
+    y_a = _make_click_track(bpm=120.0, duration_sec=30.0)
+    y_b = _make_click_track(bpm=121.5, duration_sec=30.0)
+
+    result = alignment_drift(y_a, y_b, SAMPLE_RATE, target_bpm=120.0, windows=5, overlap=0.0)
+
+    assert len(result["per_window"]) == 5
+
+
+def test_drift_correction_refused_when_fit_is_scatter():
+    """The gate that matters: a noisy, non-linear lag series must NOT produce
+    a tempo correction. Replays the real measured Featurecast lags, which
+    fit at r2 well below the threshold (finding b0cab151).
+    """
+    from epistemic_dj.mixing.render import drift_corrected_stretch_bpm
+
+    scatter = {"span_sec": 21.12, "drift_sec": -0.91, "drift_r_squared": 0.644}
+    assert drift_corrected_stretch_bpm(117.45, scatter) == 117.45  # refused
+
+    clean = {"span_sec": 21.12, "drift_sec": -0.91, "drift_r_squared": 0.95}
+    assert drift_corrected_stretch_bpm(117.45, clean) != 117.45  # acted on

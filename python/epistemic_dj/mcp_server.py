@@ -42,6 +42,7 @@ from epistemic_dj.embedding import predicted_kinetic_energy_from_tags, tag_taste
 from epistemic_dj.mixing import (
     alignment_drift,
     beat_alignment_score,
+    drift_corrected_stretch_bpm,
     overlay,
     time_stretch_to_tempo,
     write_render,
@@ -801,6 +802,7 @@ async def render_mashup(
     render_duration: float = 30.0,
     offset_sec: float = RENDER_WINDOW_OFFSET_SEC,
     auto_align: bool = True,
+    refine_tempo: bool = False,
 ) -> dict:
     """Phase 3 of the mixing-engine roadmap: real renders. Downloads a
     contiguous window (default 30s, starting at offset_sec to skip a
@@ -838,13 +840,18 @@ async def render_mashup(
         source, track_ref_a, offset_sec=offset_sec, duration=render_duration
     )
 
-    async def _render_at(offset_b: float, suffix: str) -> dict:
+    async def _render_at(offset_b: float, suffix: str, stretch_bpm: float | None = None) -> dict:
+        # stretch_bpm is what track B is stretched TO (defaults to track A's
+        # tempo). The lag-search constraint stays anchored to bpm_a either
+        # way -- it's the reference's real beat period, and a corrected
+        # stretch target must not widen or narrow the search window.
+        target = bpm_a if stretch_bpm is None else stretch_bpm
         y_b, sr_b = await _download_audio_window(
             source, track_ref_b, offset_sec=offset_b, duration=render_duration
         )
         if sr_b != sr_a:
             y_b = librosa.resample(y_b, orig_sr=sr_b, target_sr=sr_a)
-        y_b_stretched = time_stretch_to_tempo(y_b, source_bpm=bpm_b, target_bpm=bpm_a)
+        y_b_stretched = time_stretch_to_tempo(y_b, source_bpm=bpm_b, target_bpm=target)
         mixed = overlay(y_a, y_b_stretched)
         alignment = beat_alignment_score(y_a, y_b_stretched, sr_a, target_bpm=bpm_a)
         drift = alignment_drift(y_a, y_b_stretched, sr_a, target_bpm=bpm_a)
@@ -855,6 +862,7 @@ async def render_mashup(
         return {
             "output_path": str(path),
             "offset_b": offset_b,
+            "stretch_target_bpm": target,
             "alignment": alignment,
             "drift": drift,
         }
@@ -868,7 +876,36 @@ async def render_mashup(
         # dividing by the same rate the stretch itself used.
         best_lag_sec = naive["alignment"]["best_lag_sec"]
         corrected_offset_b = max(0.0, offset_sec + best_lag_sec / stretch_rate)
-        result["aligned"] = await _render_at(corrected_offset_b, "aligned")
+        aligned = await _render_at(corrected_offset_b, "aligned")
+        result["aligned"] = aligned
+
+        if refine_tempo:
+            # Drift is measured AFTER offset correction on purpose: with a
+            # bad offset the constrained lag search clips in later windows,
+            # biasing the drift estimate toward zero.
+            corrected_bpm = drift_corrected_stretch_bpm(bpm_a, aligned["drift"])
+            if corrected_bpm != bpm_a:
+                tempo_corrected = await _render_at(
+                    corrected_offset_b, "tempo_corrected", stretch_bpm=corrected_bpm
+                )
+                result["tempo_corrected"] = tempo_corrected
+
+                # Tempo and offset corrections INTERACT (finding 58bc21e6):
+                # changing the stretch rate moves where content lands, so the
+                # offset computed under the old rate goes stale -- measured as
+                # drift ~0 but alignment score regressing. Re-nudge phase AFTER
+                # tempo, the same order a human DJ uses (match tempo, then
+                # phase). The stretch rate changed, so the lag->offset
+                # conversion uses the NEW rate, not the original.
+                new_rate = corrected_bpm / bpm_b
+                final_offset_b = max(
+                    0.0,
+                    corrected_offset_b
+                    + tempo_corrected["alignment"]["best_lag_sec"] / new_rate,
+                )
+                result["refined"] = await _render_at(
+                    final_offset_b, "refined", stretch_bpm=corrected_bpm
+                )
 
     return result
 

@@ -57,6 +57,12 @@ _EMPTY_ALIGNMENT = {"score_at_zero_lag": 0.0, "best_score": 0.0, "best_lag_sec":
 # offsets plus a margin, without letting the search find unrelated structure.
 DEFAULT_LAG_SEARCH_BEATS = 2.0
 
+# Minimum r^2 for a measured drift to be treated as real linear drift worth
+# correcting, rather than scatter. Not tuned against a dataset -- a
+# deliberately conservative gate after a noisy fit produced a
+# confident-looking correction that made alignment worse (finding 58bc21e6).
+MIN_DRIFT_R_SQUARED = 0.8
+
 
 def _lag_curve(y_a: np.ndarray, y_b: np.ndarray, sr: int):
     """Normalized onset-envelope cross-correlation + its lag axis (seconds).
@@ -175,14 +181,66 @@ def alignment_drift(
         })
 
     span_sec = per_window[-1]["start_sec"] - per_window[0]["start_sec"]
-    drift_sec = per_window[-1]["best_lag_sec"] - per_window[0]["best_lag_sec"]
+    times = np.array([w["start_sec"] for w in per_window])
+    lags = np.array([w["best_lag_sec"] for w in per_window])
+
+    # Least-squares slope, NOT endpoint-minus-endpoint. Real per-window lags
+    # are noisy and non-monotonic (measured: +0.372, +0.093, -0.441, +0.046,
+    # -0.743) -- an endpoint difference uses 2 of N points and inherits the
+    # full noise of both, which is how a drift-derived tempo "correction"
+    # fired on noise and degraded alignment (finding 58bc21e6). r_squared
+    # reports how linear the drift actually is, so callers can refuse to
+    # act on a fit that is really just scatter.
+    slope, intercept = np.polyfit(times, lags, 1) if len(times) >= 2 else (0.0, 0.0)
+    predicted = slope * times + intercept
+    ss_res = float(np.sum((lags - predicted) ** 2))
+    ss_tot = float(np.sum((lags - lags.mean()) ** 2))
+    r_squared = (1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
     return {
         "per_window": per_window,
-        "drift_sec": drift_sec,
+        "drift_sec": float(slope * span_sec),
         "span_sec": span_sec,
-        "implied_tempo_error_pct": (100.0 * drift_sec / span_sec) if span_sec else 0.0,
+        "implied_tempo_error_pct": float(100.0 * slope),
+        "drift_r_squared": r_squared,
         "mean_window_score": float(np.mean([w["best_score"] for w in per_window])),
     }
+
+
+def drift_corrected_stretch_bpm(stretch_target_bpm: float, drift: dict) -> float:
+    """Converts a measured drift into a corrected stretch target, cancelling
+    the RELATIVE tempo error between the stretched track and its reference.
+
+    Derivation (sign matters, and a sign error looks like 'made it worse'
+    rather than a crash -- so this is verified empirically, not trusted):
+    best_lag_sec is POSITIVE when y_b's content arrives EARLY (shift it
+    later to align) and NEGATIVE when it arrives late. If y_b plays at
+    effective rate r relative to correct, its content runs ahead by
+    (r-1)*t, so d(lag)/dt = r - 1. We measure d(lag)/dt directly as
+    drift_sec/span_sec, giving r = 1 + drift_sec/span_sec. To cancel it,
+    scale the applied stretch by 1/r -- i.e. divide the stretch target.
+
+    Crucially this needs only the RELATIVE error: we never have to decide
+    which track's tempo estimate was wrong, which is unknowable from drift
+    alone and irrelevant to making the two line up.
+
+    Returns the original target unchanged when there's no usable drift
+    measurement or the implied rate is degenerate.
+    """
+    span = drift.get("span_sec") or 0.0
+    if span <= 0:
+        return stretch_target_bpm
+    # Refuse to act on drift that isn't actually linear. Measured case: a
+    # noisy, non-monotonic lag series still produced a confident-looking
+    # drift number, and "correcting" it degraded real alignment (finding
+    # 58bc21e6). A low r^2 means the slope is fitting scatter, not drift.
+    if drift.get("drift_r_squared", 1.0) < MIN_DRIFT_R_SQUARED:
+        return stretch_target_bpm
+    rate = 1.0 + (drift.get("drift_sec", 0.0) / span)
+    # Guard against a degenerate/absurd correction from a noisy drift read.
+    if not (0.5 < rate < 2.0):
+        return stretch_target_bpm
+    return stretch_target_bpm / rate
 
 
 def write_render(path: Path, y: np.ndarray, sr: int) -> None:

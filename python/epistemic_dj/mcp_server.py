@@ -394,6 +394,32 @@ def calibration_predict(
 TEMPO_TOLERANCE_BPM = 5.0
 CHEAP_TEMPO_EXCERPT_DURATION = 12.0
 TEMPO_INSTABILITY_SPREAD_BPM = 15.0
+TEMPO_DENSE_RECHECK_CHECKPOINTS = 5
+
+
+async def _measure_tempo_checkpoints_at(
+    source: str, track_ref: str, max_duration: float, *, min_checkpoints: int = 3
+) -> list[float]:
+    if source == "bandcamp":
+        artist_id_str, track_id_str = track_ref.split(":")
+        async with managed_client() as client:
+            track = await client.get_track(int(artist_id_str), int(track_id_str))
+        if not track.streaming_url:
+            raise ValueError(f"Track {track_ref} has no streaming_url (not streamable).")
+        if not track.duration:
+            raise ValueError(f"Track {track_ref} has no known duration.")
+        url = track.streaming_url.get("mp3-128") or next(iter(track.streaming_url.values()))
+        samples = await sample_track_checkpoints(
+            url, track_duration_sec=track.duration, window=min(max_duration, 15.0),
+            min_checkpoints=min_checkpoints,
+        )
+    elif source == "youtube":
+        samples = await youtube_measure_track_checkpoints(
+            track_ref, max_duration=max_duration, min_checkpoints=min_checkpoints
+        )
+    else:
+        raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
+    return [s.tempo_bpm for s in samples]
 
 
 async def _measure_tempo_checkpoints(
@@ -408,24 +434,29 @@ async def _measure_tempo_checkpoints(
     sample_track_checkpoints/measure_track_checkpoints -- see their
     docstrings for why this is a separate path from sample_track()
     (which feeds the deployed kinetic_energy/valence regressions).
+
+    Adaptive densification: librosa's default beat_track() prior can
+    octave-misread an isolated window (half/double the real tempo). Two
+    signal-processing fixes were tried first (tempogram magnitude, then
+    peak prominence, comparing 0.5x/1x/2x candidates) -- both
+    systematically picked the double-tempo candidate on real audio and
+    made the spread WORSE, not better (finding 24f6611a; autocorrelation
+    is inherently stronger at short lags regardless of true periodicity).
+    What worked instead: more real measurements. On a known-unstable
+    track, widening 3->5 checkpoints put both extra readings exactly on
+    the majority value, confirming the outlier rather than needing to be
+    corrected. So on an unstable initial read, re-measure once at higher
+    density and use THAT set -- real redundancy, not a derived heuristic.
     """
-    if source == "bandcamp":
-        artist_id_str, track_id_str = track_ref.split(":")
-        async with managed_client() as client:
-            track = await client.get_track(int(artist_id_str), int(track_id_str))
-        if not track.streaming_url:
-            raise ValueError(f"Track {track_ref} has no streaming_url (not streamable).")
-        if not track.duration:
-            raise ValueError(f"Track {track_ref} has no known duration.")
-        url = track.streaming_url.get("mp3-128") or next(iter(track.streaming_url.values()))
-        samples = await sample_track_checkpoints(
-            url, track_duration_sec=track.duration, window=min(max_duration, 15.0)
-        )
-    elif source == "youtube":
-        samples = await youtube_measure_track_checkpoints(track_ref, max_duration=max_duration)
-    else:
-        raise ValueError(f"Unknown source '{source}' -- must be bandcamp or youtube.")
-    return [s.tempo_bpm for s in samples]
+    checkpoints = await _measure_tempo_checkpoints_at(source, track_ref, max_duration)
+    if len(checkpoints) < 2:
+        return checkpoints
+    spread = max(checkpoints) - min(checkpoints)
+    if spread < TEMPO_INSTABILITY_SPREAD_BPM:
+        return checkpoints
+    return await _measure_tempo_checkpoints_at(
+        source, track_ref, max_duration, min_checkpoints=TEMPO_DENSE_RECHECK_CHECKPOINTS
+    )
 
 
 def _tempo_point_estimate(checkpoints: list[float], *, track_ref: str) -> float:

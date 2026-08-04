@@ -297,12 +297,47 @@ def _checkpoint_features(*tempos):
     ]
 
 
+async def test_measure_tempo_checkpoints_densifies_on_instability(monkeypatch):
+    # Real case (finding 24f6611a): a 3-checkpoint spread >= threshold
+    # triggers one re-measure at higher density rather than a signal-
+    # processing octave correction. Densified set should be what's returned.
+    calls = []
+
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0, min_checkpoints=3):
+        calls.append(min_checkpoints)
+        if min_checkpoints == 3:
+            return _checkpoint_features(123.0, 117.5, 78.3)  # spread=44.7, unstable
+        return _checkpoint_features(123.0, 117.5, 117.5, 117.5, 78.3)  # denser, majority clear
+
+    monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
+
+    result = await server._measure_tempo_checkpoints("youtube", "vid1", 45.0)
+
+    assert calls == [3, server.TEMPO_DENSE_RECHECK_CHECKPOINTS]
+    assert result == pytest.approx([123.0, 117.5, 117.5, 117.5, 78.3])
+
+
+async def test_measure_tempo_checkpoints_skips_densify_when_stable(monkeypatch):
+    calls = []
+
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0, min_checkpoints=3):
+        calls.append(min_checkpoints)
+        return _checkpoint_features(120.0, 122.0, 121.0)  # spread=2, stable
+
+    monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
+
+    result = await server._measure_tempo_checkpoints("youtube", "vid1", 45.0)
+
+    assert calls == [3]  # no second, denser call
+    assert result == pytest.approx([120.0, 122.0, 121.0])
+
+
 async def test_calibration_predict_tempo_measures_real_short_excerpt(monkeypatch):
     # The corrected path (David's correction, 2026-08-03): predicted_value
     # must come from real audio checkpoints, never title/genre text.
     seen_durations = []
 
-    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0, min_checkpoints=3):
         seen_durations.append(max_duration)
         return _checkpoint_features(128.0)
 
@@ -323,7 +358,7 @@ async def test_calibration_predict_tempo_measures_real_short_excerpt(monkeypatch
 async def test_calibration_predict_tempo_uses_median_across_checkpoints(monkeypatch):
     # Real within-track variation (e.g. DNB-style tracks) -- median, not
     # mean, so one outlier checkpoint doesn't dominate the point estimate.
-    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0, min_checkpoints=3):
         return _checkpoint_features(120.0, 122.0, 200.0)  # one wild outlier
 
     monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
@@ -385,7 +420,7 @@ async def test_tempo_compatibility_pct_octave_normalizes():
 async def test_calibration_predict_tempo_compatibility_measures_both_tracks(monkeypatch):
     bpm_by_video = {"vidA": 128.0, "vidB": 132.0}
 
-    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0, min_checkpoints=3):
         return _checkpoint_features(bpm_by_video[video_id])
 
     monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
@@ -409,7 +444,7 @@ async def test_calibration_resolve_tempo_compatibility_uses_fuller_analysis(monk
 
     bpm_by_video = {"vidA": 130.0, "vidB": 130.0}  # fuller analysis says exact match now
 
-    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0, min_checkpoints=3):
         return _checkpoint_features(bpm_by_video[video_id])
 
     monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
@@ -437,7 +472,7 @@ async def test_calibration_resolve_dispatches_tempo_quantity_via_youtube(monkeyp
         predicted_value=140.0, confidence=0.5, quantity="tempo_bpm",
     )
 
-    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0, min_checkpoints=3):
         return _checkpoint_features(143.0)
 
     monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)
@@ -455,7 +490,7 @@ async def test_calibration_resolve_prints_instability_note_on_large_spread(monke
         predicted_value=140.0, confidence=0.5, quantity="tempo_bpm",
     )
 
-    async def fake_measure_checkpoints(video_id, *, max_duration=60.0):
+    async def fake_measure_checkpoints(video_id, *, max_duration=60.0, min_checkpoints=3):
         return _checkpoint_features(100.0, 140.0, 175.0)  # spread=75, well over threshold
 
     monkeypatch.setattr(server, "youtube_measure_track_checkpoints", fake_measure_checkpoints)

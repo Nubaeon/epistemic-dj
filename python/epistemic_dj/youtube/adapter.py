@@ -48,7 +48,7 @@ async def measure_track(video_id: str, *, max_duration: float = 60.0) -> Sampled
 
 
 async def measure_track_checkpoints(
-    video_id: str, *, max_duration: float = 60.0
+    video_id: str, *, max_duration: float = 60.0, min_checkpoints: int = 3
 ) -> list[AudioFeatures]:
     """Calibration-only counterpart to measure_track(): scales checkpoint
     count with track duration and returns the raw per-checkpoint samples
@@ -65,4 +65,5 @@ async def measure_track_checkpoints(
         window=min(max_duration, 15.0),
         suffix=f".{stream['ext']}",
         headers=stream["headers"],
+        min_checkpoints=min_checkpoints,
     )

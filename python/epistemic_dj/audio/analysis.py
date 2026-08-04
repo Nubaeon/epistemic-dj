@@ -225,11 +225,11 @@ LONG_TRACK_THRESHOLD_SEC = 360.0  # 6 min -- beyond typical single-track length
 CHECKPOINT_INTERVAL_SEC = 180.0  # +1 checkpoint per ~3 extra minutes
 
 
-def _checkpoint_count(track_duration_sec: float) -> int:
+def _checkpoint_count(track_duration_sec: float, *, min_checkpoints: int = 3) -> int:
     if track_duration_sec <= LONG_TRACK_THRESHOLD_SEC:
-        return 3
+        return min_checkpoints
     extra = math.ceil((track_duration_sec - LONG_TRACK_THRESHOLD_SEC) / CHECKPOINT_INTERVAL_SEC)
-    return 3 + extra
+    return min_checkpoints + extra
 
 
 def _checkpoint_offsets(
@@ -257,11 +257,22 @@ async def sample_track_checkpoints(
     window: float = DEFAULT_SAMPLE_WINDOW_SEC,
     suffix: str = ".mp3",
     headers: dict[str, str] | None = None,
+    min_checkpoints: int = 3,
 ) -> list[AudioFeatures]:
     """Like sample_track(), but (a) scales checkpoint count with track
     duration instead of a fixed 3, and (b) returns the raw per-checkpoint
     samples with NO aggregation -- callers decide how to reduce them
     (median, spread, etc.) rather than a silent mean baked in here.
+
+    min_checkpoints raises the floor above 3 -- used by the tempo path to
+    re-measure densely when the default 3-point read is unstable (real
+    octave-misread windows are isolated: on a measured case, widening
+    3->5 checkpoints put 2 EXTRA readings exactly on the majority value,
+    confirming the outlier rather than needing a signal-processing fix;
+    two independent tempogram-based octave-correction attempts were tried
+    first and both systematically picked the double-tempo candidate,
+    finding 24f6611a -- more real measurements beat a clever single-window
+    heuristic here).
 
     Built as a separate function, not a change to sample_track()/
     _sample_offsets() -- those feed the deployed kinetic_energy/valence
@@ -271,7 +282,7 @@ async def sample_track_checkpoints(
     established for the same reason when the tempo_bpm calibration path
     was built). This function is calibration-only.
     """
-    num_checkpoints = _checkpoint_count(track_duration_sec)
+    num_checkpoints = _checkpoint_count(track_duration_sec, min_checkpoints=min_checkpoints)
     offsets = _checkpoint_offsets(track_duration_sec, min_offset, window, num_checkpoints)
     furthest_point = offsets[-1] + window
     range_bytes = estimate_bytes_for_seconds(furthest_point, bitrate_kbps)

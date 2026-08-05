@@ -5,6 +5,46 @@ follows [Keep a Changelog](https://keepachangelog.com/) — this project is
 alpha, pre-1.0, so expect breaking changes between minor versions without
 a deprecation period.
 
+## [Unreleased]
+
+### Added
+- **Stem separation** (Phase 4): pip-installable Demucs (`htdemucs`
+  model) wraps into `separate_stems`, lazily imported so the rest of the
+  server works without the optional `separation` extra installed.
+  `render_stem_mashup` overlays vocals from one track onto another's
+  instrumental, reusing the existing beatmatch/alignment machinery
+  unchanged. Validated against MUSDB18's ground-truth stems (pipeline
+  correctness) and against real audio (real-render listening test
+  confirmed the separation+overlay mechanism itself works).
+- **Robust tempo checkpoint measurement**: when the initial 3-checkpoint
+  spread trips the instability threshold, one adaptive re-measure at
+  higher checkpoint density (5) replaces it. On the real known-unstable
+  case this turned a fragile 2-of-3 majority into a robust 4-of-5 one,
+  with no new signal processing.
+
+### Fixed
+- `beat_alignment_score`'s lag search was unconstrained and could lock
+  onto a spurious cross-correlation peak tens of beat-periods from zero;
+  now constrained to `±search_beats` beat periods around the expected
+  tempo.
+- `alignment_drift`'s original endpoint-based estimator could
+  manufacture a confident-looking drift number from noisy, non-monotonic
+  per-window lags; replaced with a confidence-weighted least-squares fit
+  reporting `drift_r_squared`, and `drift_corrected_stretch_bpm` now
+  refuses to act when the fit is below the linearity threshold.
+
+### Dead ends (real, not silently dropped)
+- `ZFTurbo/Music-Source-Separation-Training` (planned in the original
+  research pass for stem separation) is not distributed on PyPI —
+  confirmed via `pip index versions`. Shipped with Demucs instead.
+- Two single-window octave-correction heuristics for tempo estimation
+  (tempogram magnitude, then peak prominence, comparing 0.5x/1x/2x
+  candidates) both systematically picked the double-tempo candidate on
+  real audio and made spread worse, not better — a track's rhythmic
+  subdivisions are genuine periodicities too, so single-window candidate
+  comparison is fundamentally confounded. Fixed via checkpoint
+  densification instead (see Added, above).
+
 ## [0.1.0] — 2026-08-03 (first tagged release)
 
 **Status: alpha, developers only.** No packaging, no installer, no

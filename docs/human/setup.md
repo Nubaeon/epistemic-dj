@@ -76,11 +76,30 @@ not a taste signal). In Claude:
 Use youtube_get_playlist_tracks with my playlist id: <paste id>
 ```
 
+## Rendering mashups (optional extra)
+
+`render_mashup` (full-track overlay) works with the base install.
+`render_stem_mashup` (vocals from one track over another's instrumental)
+needs Demucs, which is kept out of the default install since it's heavy
+and GPU-dependent:
+
+```bash
+cd python
+uv sync --extra separation
+```
+
+`render_stem_mashup` defaults to `device="cuda"` — pass `device="cpu"`
+explicitly if you don't have a GPU (slower, but works). Renders write
+real `.wav` files to `python/renders/`; `auto_align=True` (the default,
+both tools) writes both a naive and an auto-corrected version so you
+can A/B them directly.
+
 ## What's not there yet
 
 - Track tags/genre metadata on Bandcamp (collection listing is
   lightweight — see `docs/dev/architecture.md` for why)
 - Lossless audio download on Bandcamp (currently an open unknown — see
   `docs/dev/architecture.md`)
-- Full stem separation (Demucs/stemgen — chosen, not yet wired in)
 - Any packaging/installer — this is source-checkout-and-run only right now
+- Export/upload pipeline for rendered mashups (YouTube first, Bandcamp
+  last — no confirmed public Bandcamp upload API)

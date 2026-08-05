@@ -102,7 +102,7 @@ Empirica. Headline calls:
 | Area | Call |
 |---|---|
 | Bandcamp access | Integrate `bandcamp_async_api` or `bandcamp-fetch` (cookie-auth) — no official API covers personal collections. **Verify the lossless-download path early**; the private collection-sync API is lossy MP3-V0 only. |
-| Stem separation | Use `ZFTurbo/Music-Source-Separation-Training` (unified surface, MIT) instead of hand-picking bare Demucs — Demucs is no longer SOTA. |
+| Stem separation | ~~Use `ZFTurbo/Music-Source-Separation-Training`~~ — checked at build time and it's **not distributed on PyPI** (dead-end, confirmed via `pip index versions`). Shipped with pip-installable Demucs (`htdemucs` model) instead, David's explicit choice — see Phase 4 below. |
 | `.stem.mp4` | Don't chase strict NI/Traktor byte-compatibility unless hardware interop is a confirmed need — the ecosystem (stemgen, Mixxx) is already drifting to simpler lossless containers. |
 | Consumer stem-remix apps | **Don't build a real-time performance tool** (djay, Serato, Traktor already do live GPU stem separation better than we would). **Do build offline, calibrated mashup rendering** (decision d55de6e8, 2026-08-03) — the differentiator is an AI doing the beatmatch/overlay judgment in advance, grounded in real measurement of the actual tracks, not curation/economics/UX layered on someone else's separation tech. |
 | Taste profiling | Genuinely close to greenfield for the Bandcamp-specific, artifact-driven angle. Watch for the documented LLM-taste-profile bias risk (genre/origin skew) — the artifact-substrate approach sidesteps it by construction (interpretable by design, not bolted on). |
@@ -187,10 +187,44 @@ loop rather than shipping unverified:
   alignment signal and writes both naive/aligned versions for direct
   comparison. One correction step measurably helps but doesn't fully
   converge — iterative refinement, not a one-shot claim.
-- **Phase 4 (next)** — stem separation (Demucs/`stemgen`, chosen in the
-  earlier build-vs-integrate research — see table above) + selective
-  stem overlay (e.g. vocals-over-instrumental), the actual mashup
-  capability building on Phase 3's alignment mechanics.
+- **Phase 4 (done)** — stem separation via pip-installable Demucs
+  (`htdemucs` model; ZFTurbo from the earlier research table turned out
+  not to be on PyPI, a real dead-end, not just a preference change) +
+  selective stem overlay (`render_stem_mashup`, e.g.
+  vocals-over-instrumental), reusing Phase 3's beatmatch/alignment
+  machinery unchanged — a stem is just an audio array. Validated against
+  MUSDB18's ground-truth stems (pipeline correctness, not just "did it
+  run"), and against real audio: David listened to a real render and
+  confirmed the separation+overlay mechanism itself is "actually great."
+- **Post-Phase-4 hardening (done)** — two real bugs found and fixed on
+  real audio, not guessed at:
+  - `beat_alignment_score`'s lag search was unconstrained and could lock
+    onto a spurious peak tens of beat-periods away (~17s on one real
+    render); fixed by constraining the search to `±search_beats` beat
+    periods around the expected tempo.
+  - A drift-based tempo-correction mechanism was built, found to
+    *degrade* real alignment when tested, root-caused to a noisy
+    2-endpoint drift estimator manufacturing a confident-looking trend
+    from scatter, and fixed with a confidence-weighted least-squares fit
+    + an r²-linearity gate that refuses to act on scatter. In the
+    process this **retracted** the original finding that motivated the
+    whole effort (a claimed "-5.28% tempo drift" turned out to be a
+    measurement artifact, not real). The generalizable lesson: report
+    fit quality alongside any derived scalar fed to an automated
+    decision — that's what actually prevents this class of bug, not a
+    "smarter" correction algorithm.
+  - Separately, per-checkpoint tempo readings could octave-misread
+    (half/double the real tempo) on an isolated window. Two
+    single-window signal-processing fixes were tried (comparing
+    tempogram magnitude, then peak prominence, across 0.5x/1x/2x
+    candidates) and **both** systematically picked the double-tempo
+    candidate on real audio, making the spread worse — a track's
+    subdivisions are genuine periodicities too, so single-window
+    candidate comparison is fundamentally confounded. What worked: an
+    adaptive re-measure at higher checkpoint density when the initial
+    spread is unstable — on the real case, the extra checkpoints landed
+    exactly on the majority value. More real measurements beat a
+    clever heuristic.
 - **Phase 5** — YouTube upload pipeline. **Phase 6** — Bandcamp
   (lowest priority, no confirmed public upload API).
 

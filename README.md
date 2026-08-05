@@ -49,8 +49,9 @@ guess standing in for listening to the track.
    cross-correlation (not a guess), auto-corrected against its own
    measurement. Offline, calibrated composition — not a real-time
    DJ-booth tool (see [`docs/human/overview.md`](docs/human/overview.md)
-   for that distinction). Stem separation (vocals/instrumental overlay)
-   is next; full-track overlay works today.
+   for that distinction). Full-track overlay and selective stem overlay
+   (vocals from one track over another's instrumental, via Demucs) both
+   work today.
 
 ## Features
 
@@ -75,13 +76,19 @@ guess standing in for listening to the track.
 - **Beatmatching** - pitch-preserving time-stretch (librosa phase vocoder)
   to a real measured target tempo, octave-aware (half/double-time)
   compatibility scoring
-- **Real renders** - full-track overlay today, written as actual audio
-  files (`epistemic-dj/renders/`)
+- **Real renders** - full-track overlay (`render_mashup`) and selective
+  stem overlay (`render_stem_mashup`, e.g. vocals-over-instrumental via
+  Demucs) both write actual audio files (`epistemic-dj/renders/`)
 - **Alignment scoring** - genuine cross-correlation of onset-strength
   envelopes measures how well two tracks' beats actually line up, not a
   guess — and the render auto-corrects using its own signal
-- **Next**: stem separation (Demucs/`stemgen`) for selective overlay
-  (e.g. vocals-over-instrumental) instead of two full mixes competing
+- **Robust tempo measurement** - checkpoint spread beyond threshold
+  triggers a denser re-measure rather than trusting a single-window
+  octave guess (two signal-processing octave-correction heuristics were
+  tried and both made things worse on real audio — more real
+  measurements won, not cleverness)
+- **Next**: YouTube upload pipeline; Bandcamp export (lowest priority,
+  no confirmed public upload API)
 
 ### Generative Composition (upcoming, JS)
 - **Strudel Integration** - Algorithmic music composition via live-coding
@@ -101,6 +108,10 @@ npx serve src/web                                              # web UI
 cd python
 uv sync
 uv run epistemic-dj-mcp
+
+# Optional: stem separation (render_stem_mashup) needs the extra --
+# heavy, GPU-dependent deps kept out of the default install
+uv sync --extra separation
 ```
 
 See [`docs/human/setup.md`](docs/human/setup.md) for connecting your real
@@ -159,6 +170,9 @@ Highlights:
   audio-grounded on both ends
 - `render_mashup` — real time-stretched, beat-aligned overlay render,
   writes actual `.wav` output
+- `render_stem_mashup` — Demucs-separated vocals overlaid on another
+  track's instrumental, same beatmatch/alignment machinery as
+  `render_mashup` (requires `uv sync --extra separation`)
 
 ## Epistemic → Musical Mappings (JS side)
 
@@ -219,7 +233,9 @@ Generate a pattern for my current epistemic state:
 Full phase-by-phase detail: [`docs/dev/architecture.md`](docs/dev/architecture.md).
 - [x] Tempo prediction + pairwise compatibility, audio-grounded
 - [x] Real time-stretched, beat-aligned overlay renders + auto-alignment
-- [ ] Stem separation (Demucs/`stemgen`) for selective overlay
+- [x] Stem separation (Demucs) for selective overlay — `render_stem_mashup`
+- [x] Robust tempo measurement (adaptive checkpoint densification on
+      instability, rather than a single-window octave-correction guess)
 - [ ] YouTube upload pipeline
 - [ ] Bandcamp export (lowest priority — no confirmed public upload API)
 

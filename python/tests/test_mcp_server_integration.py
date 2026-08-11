@@ -65,6 +65,7 @@ async def test_all_expected_tools_are_registered():
         "calibration_resolve_tempo_compatibility",
         "render_mashup",
         "render_stem_mashup",
+        "render_multistem_mashup",
         "calibration_brier",
         "calibration_list_predictions",
         "bandcamp_get_track_tags",

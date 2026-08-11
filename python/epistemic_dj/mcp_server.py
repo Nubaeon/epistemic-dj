@@ -14,6 +14,7 @@ from pathlib import Path
 from statistics import median
 
 import librosa
+import numpy as np
 from bandcamp_async_api.models import CollectionItem, SearchResultItem
 from mcp.server.fastmcp import FastMCP
 
@@ -44,6 +45,7 @@ from epistemic_dj.mixing import (
     beat_alignment_score,
     drift_corrected_stretch_bpm,
     overlay,
+    stem_leakage_scores,
     time_stretch_to_tempo,
     write_render,
 )
@@ -1005,12 +1007,14 @@ async def render_stem_mashup(
         offset_sec=offset_sec, duration=render_duration, device=device,
     )
     instrumental = _instrumental_from_stems(stems_instr)
+    leakage_instr = stem_leakage_scores(stems_instr, sr_instr)
 
     async def _render_at(vocals_offset_sec: float, suffix: str) -> dict:
         stems_vocals, sr_vocals = await _separate_track_stems(
             source, track_ref_vocals,
             offset_sec=vocals_offset_sec, duration=render_duration, device=device,
         )
+        leakage_vocals = stem_leakage_scores(stems_vocals, sr_vocals)
         vocals = stems_vocals["vocals"]
         if sr_vocals != sr_instr:
             vocals = librosa.resample(vocals, orig_sr=sr_vocals, target_sr=sr_instr)
@@ -1033,6 +1037,7 @@ async def render_stem_mashup(
             "vocals_offset_sec": vocals_offset_sec,
             "alignment": alignment,
             "drift": drift,
+            "stem_leakage_vocals": leakage_vocals,
         }
 
     naive = await _render_at(offset_sec, "naive")
@@ -1040,6 +1045,7 @@ async def render_stem_mashup(
         "bpm_vocals": bpm_vocals,
         "bpm_instrumental": bpm_instrumental,
         "target_bpm": bpm_instrumental,
+        "stem_leakage_instrumental": leakage_instr,
         "naive": naive,
     }
 
@@ -1047,6 +1053,109 @@ async def render_stem_mashup(
         best_lag_sec = naive["alignment"]["best_lag_sec"]
         corrected_offset = max(0.0, offset_sec + best_lag_sec / stretch_rate)
         result["aligned"] = await _render_at(corrected_offset, "aligned")
+
+    return result
+
+
+def _combine_stems(stems: dict, names: list[str]) -> np.ndarray:
+    """Sums NAMED stems (positive selection) -- the general counterpart to
+    _instrumental_from_stems' fixed exclude-vocals convention. Used by
+    render_multistem_mashup, where the caller picks an arbitrary subset
+    per track rather than the fixed vocals/instrumental split.
+    """
+    if not names:
+        raise ValueError("names must be non-empty -- select at least one stem.")
+    missing = [n for n in names if n not in stems]
+    if missing:
+        raise ValueError(f"Unknown stem(s) {missing} -- available: {sorted(stems.keys())}")
+    layers = [stems[n] for n in names]
+    return sum(layers[1:], start=layers[0])
+
+
+@mcp.tool()
+async def render_multistem_mashup(
+    source: str,
+    track_ref_a: str,
+    stems_a: list[str],
+    track_ref_b: str,
+    stems_b: list[str],
+    output_name: str,
+    render_duration: float = 30.0,
+    offset_sec: float = RENDER_WINDOW_OFFSET_SEC,
+    device: str = "cuda",
+    auto_align: bool = True,
+) -> dict:
+    """Generalizes render_stem_mashup's fixed vocals-over-instrumental
+    split into ARBITRARY stem combinations from both tracks -- e.g.
+    drums+bass from track A, vocals+other from track B, or any other
+    subset of {vocals, drums, bass, other}. Real independent stem-level
+    overlay, not a hardcoded acapella-over-instrumental case.
+
+    track_ref_a's combined stems are the fixed tempo/beat target (same
+    convention as render_mashup/render_stem_mashup); track_ref_b's
+    combined stems are time-stretched to match. Both tracks are
+    separated via Demucs (real GPU cost) -- track A once, track B once
+    per render pass (naive, plus a second corrected pass if auto_align).
+
+    Each separation's stem_leakage_scores (mixing.render, reused from
+    render_stem_mashup) is included in the result -- a real measured
+    signal for how cleanly Demucs isolated the stems being combined, not
+    blind trust in the model's output.
+
+    Requires the `separation` extra (`uv sync --extra separation`).
+    Both tracks must share `source`. Output written to epistemic-dj/renders/.
+    """
+    tempo_checkpoints_a = await _measure_tempo_checkpoints(source, track_ref_a, 45.0)
+    tempo_checkpoints_b = await _measure_tempo_checkpoints(source, track_ref_b, 45.0)
+    bpm_a = _tempo_point_estimate(tempo_checkpoints_a, track_ref=track_ref_a)
+    bpm_b = _tempo_point_estimate(tempo_checkpoints_b, track_ref=track_ref_b)
+    stretch_rate = bpm_a / bpm_b
+
+    stems_a_raw, sr_a = await _separate_track_stems(
+        source, track_ref_a, offset_sec=offset_sec, duration=render_duration, device=device
+    )
+    leakage_a = stem_leakage_scores(stems_a_raw, sr_a)
+    combined_a = _combine_stems(stems_a_raw, stems_a)
+
+    async def _render_at(offset_b_sec: float, suffix: str) -> dict:
+        stems_b_raw, sr_b = await _separate_track_stems(
+            source, track_ref_b, offset_sec=offset_b_sec, duration=render_duration, device=device
+        )
+        leakage_b = stem_leakage_scores(stems_b_raw, sr_b)
+        combined_b = _combine_stems(stems_b_raw, stems_b)
+        if sr_b != sr_a:
+            combined_b = librosa.resample(combined_b, orig_sr=sr_b, target_sr=sr_a)
+        stretched_b = time_stretch_to_tempo(combined_b, source_bpm=bpm_b, target_bpm=bpm_a)
+        mixed = overlay(combined_a, stretched_b)
+        alignment = beat_alignment_score(combined_a, stretched_b, sr_a, target_bpm=bpm_a)
+        drift = alignment_drift(combined_a, stretched_b, sr_a, target_bpm=bpm_a)
+
+        RENDER_OUTPUT_DIR.mkdir(exist_ok=True)
+        path = RENDER_OUTPUT_DIR / f"{output_name}_{suffix}.wav"
+        write_render(path, mixed, sr_a)
+        return {
+            "output_path": str(path),
+            "offset_b_sec": offset_b_sec,
+            "alignment": alignment,
+            "drift": drift,
+            "stem_leakage_b": leakage_b,
+        }
+
+    naive = await _render_at(offset_sec, "naive")
+    result = {
+        "bpm_a": bpm_a,
+        "bpm_b": bpm_b,
+        "target_bpm": bpm_a,
+        "stems_a": stems_a,
+        "stems_b": stems_b,
+        "stem_leakage_a": leakage_a,
+        "naive": naive,
+    }
+
+    if auto_align:
+        best_lag_sec = naive["alignment"]["best_lag_sec"]
+        corrected_offset_b = max(0.0, offset_sec + best_lag_sec / stretch_rate)
+        result["aligned"] = await _render_at(corrected_offset_b, "aligned")
 
     return result
 

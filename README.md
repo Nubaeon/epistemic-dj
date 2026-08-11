@@ -76,12 +76,19 @@ guess standing in for listening to the track.
 - **Beatmatching** - pitch-preserving time-stretch (librosa phase vocoder)
   to a real measured target tempo, octave-aware (half/double-time)
   compatibility scoring
-- **Real renders** - full-track overlay (`render_mashup`) and selective
-  stem overlay (`render_stem_mashup`, e.g. vocals-over-instrumental via
-  Demucs) both write actual audio files (`epistemic-dj/renders/`)
+- **Real renders** - full-track overlay (`render_mashup`), fixed
+  vocals-over-instrumental stem overlay (`render_stem_mashup`), and
+  arbitrary independent stem combination from both tracks
+  (`render_multistem_mashup`, e.g. drums+bass from one track under
+  vocals+other from another) all write actual audio files
+  (`epistemic-dj/renders/`)
 - **Alignment scoring** - genuine cross-correlation of onset-strength
   envelopes measures how well two tracks' beats actually line up, not a
   guess — and the render auto-corrects using its own signal
+- **Stem-separation quality diagnostic** - real measured leakage score
+  (pairwise onset-envelope correlation across a track's own separated
+  stems) surfaced on every stem-based render, so separation quality is a
+  number you can see, not blind trust in the model
 - **Robust tempo measurement** - checkpoint spread beyond threshold
   triggers a denser re-measure rather than trusting a single-window
   octave guess (two signal-processing octave-correction heuristics were
@@ -173,6 +180,10 @@ Highlights:
 - `render_stem_mashup` — Demucs-separated vocals overlaid on another
   track's instrumental, same beatmatch/alignment machinery as
   `render_mashup` (requires `uv sync --extra separation`)
+- `render_multistem_mashup` — arbitrary stem selection from BOTH tracks
+  (e.g. drums+bass from A, vocals+other from B), same machinery,
+  independent overlay control instead of a fixed vocals/instrumental
+  split (requires `uv sync --extra separation`)
 
 ## Epistemic → Musical Mappings (JS side)
 
@@ -236,6 +247,8 @@ Full phase-by-phase detail: [`docs/dev/architecture.md`](docs/dev/architecture.m
 - [x] Stem separation (Demucs) for selective overlay — `render_stem_mashup`
 - [x] Robust tempo measurement (adaptive checkpoint densification on
       instability, rather than a single-window octave-correction guess)
+- [x] Independent multi-stem overlay (`render_multistem_mashup`) +
+      stem-separation leakage diagnostic
 - [ ] YouTube upload pipeline
 - [ ] Bandcamp export (lowest priority — no confirmed public upload API)
 

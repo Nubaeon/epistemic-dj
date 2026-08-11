@@ -216,3 +216,113 @@ async def test_render_stem_mashup_auto_align_false_skips_second_pass(monkeypatch
     assert "naive" in result
     assert "aligned" not in result
     assert not (tmp_path / "stem_test2_aligned.wav").exists()
+
+
+def test_combine_stems_sums_named_stems_only():
+    stems = {
+        "vocals": np.array([10.0, 10.0]),
+        "drums": np.array([1.0, 1.0]),
+        "bass": np.array([2.0, 2.0]),
+        "other": np.array([3.0, 3.0]),
+    }
+    combined = server._combine_stems(stems, ["drums", "bass"])
+    assert combined == pytest.approx(np.array([3.0, 3.0]))
+
+
+def test_combine_stems_rejects_empty_selection():
+    with pytest.raises(ValueError, match="non-empty"):
+        server._combine_stems({"vocals": np.array([1.0])}, [])
+
+
+def test_combine_stems_rejects_unknown_stem_name():
+    with pytest.raises(ValueError, match="Unknown stem"):
+        server._combine_stems({"vocals": np.array([1.0])}, ["fx"])
+
+
+async def test_render_multistem_mashup_auto_align_writes_naive_and_aligned_files(
+    monkeypatch, tmp_path
+):
+    async def fake_measure_checkpoints(source, track_ref, max_duration):
+        return {"vidA": [120.0], "vidB": [130.0]}[track_ref]
+
+    monkeypatch.setattr(server, "_measure_tempo_checkpoints", fake_measure_checkpoints)
+
+    sr = 22050
+    n = sr * 5
+    rng = np.random.RandomState(0)
+    requested_offsets = []
+
+    async def fake_separate(source, track_ref, *, offset_sec, duration, device="cuda"):
+        requested_offsets.append((track_ref, offset_sec))
+        return {
+            "vocals": (rng.randn(n) * 0.1).astype(np.float32),
+            "drums": (rng.randn(n) * 0.1).astype(np.float32),
+            "bass": (rng.randn(n) * 0.1).astype(np.float32),
+            "other": (rng.randn(n) * 0.1).astype(np.float32),
+        }, sr
+
+    monkeypatch.setattr(server, "_separate_track_stems", fake_separate)
+    monkeypatch.setattr(server, "RENDER_OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(
+        server, "beat_alignment_score",
+        lambda y_a, y_b, sr, **kw: {
+            "score_at_zero_lag": 0.1, "best_score": 0.6, "best_lag_sec": 2.0,
+        },
+    )
+
+    result = await server.render_multistem_mashup(
+        source="youtube", track_ref_a="vidA", stems_a=["drums", "bass"],
+        track_ref_b="vidB", stems_b=["vocals", "other"],
+        output_name="multistem_test", render_duration=5.0, offset_sec=10.0,
+    )
+
+    assert result["bpm_a"] == pytest.approx(120.0)
+    assert result["bpm_b"] == pytest.approx(130.0)
+    assert result["target_bpm"] == pytest.approx(120.0)
+    assert result["stems_a"] == ["drums", "bass"]
+    assert result["stems_b"] == ["vocals", "other"]
+    assert "stem_leakage_a" in result
+    assert "stem_leakage_b" in result["naive"]
+    assert "naive" in result and "aligned" in result
+    assert Path(result["naive"]["output_path"]).exists()
+    assert Path(result["aligned"]["output_path"]).exists()
+
+    # track A separated once (fixed target); track B separated twice
+    # (naive offset + corrected offset) -- correction actually applied.
+    assert len([o for ref, o in requested_offsets if ref == "vidA"]) == 1
+    b_offsets = [o for ref, o in requested_offsets if ref == "vidB"]
+    assert len(b_offsets) == 2
+    assert b_offsets[0] == pytest.approx(10.0)
+    assert b_offsets[1] != pytest.approx(10.0)
+
+
+async def test_render_multistem_mashup_auto_align_false_skips_second_pass(monkeypatch, tmp_path):
+    async def fake_measure_checkpoints(source, track_ref, max_duration):
+        return {"vidA": [120.0], "vidB": [120.0]}[track_ref]
+
+    monkeypatch.setattr(server, "_measure_tempo_checkpoints", fake_measure_checkpoints)
+
+    sr = 22050
+    n = sr * 5
+    rng = np.random.RandomState(0)
+
+    async def fake_separate(source, track_ref, *, offset_sec, duration, device="cuda"):
+        return {
+            "vocals": (rng.randn(n) * 0.1).astype(np.float32),
+            "drums": (rng.randn(n) * 0.1).astype(np.float32),
+            "bass": (rng.randn(n) * 0.1).astype(np.float32),
+            "other": (rng.randn(n) * 0.1).astype(np.float32),
+        }, sr
+
+    monkeypatch.setattr(server, "_separate_track_stems", fake_separate)
+    monkeypatch.setattr(server, "RENDER_OUTPUT_DIR", tmp_path)
+
+    result = await server.render_multistem_mashup(
+        source="youtube", track_ref_a="vidA", stems_a=["vocals"],
+        track_ref_b="vidB", stems_b=["drums", "bass", "other"],
+        output_name="multistem_test2", render_duration=5.0, auto_align=False,
+    )
+
+    assert "naive" in result
+    assert "aligned" not in result
+    assert not (tmp_path / "multistem_test2_aligned.wav").exists()

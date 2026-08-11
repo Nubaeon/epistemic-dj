@@ -270,3 +270,30 @@ def drift_corrected_stretch_bpm(stretch_target_bpm: float, drift: dict) -> float
 
 def write_render(path: Path, y: np.ndarray, sr: int) -> None:
     sf.write(str(path), y, sr)
+
+
+def stem_leakage_scores(stems: dict[str, np.ndarray], sr: int) -> dict[str, float]:
+    """Real, measured stem-separation quality signal, not blind trust in
+    Demucs output. Reuses beat_alignment_score's zero-lag onset-envelope
+    correlation -- the same primitive already verified for beat alignment
+    -- pairwise across a track's OWN separated stems. Zero-lag is
+    meaningful here (unlike two different tracks): all stems come from one
+    separation call on one waveform, so they're already time-aligned by
+    construction. A genuinely clean separation should have LOW cross-stem
+    correlation (each stem carries different content); a high score on a
+    given pair suggests leakage -- e.g. vocals still carrying rhythmic
+    drum energy. Informational only: this does not gate or reject a
+    separation, it reports a number so the caller (and eventually a real
+    predict/measure/resolve loop) can judge it.
+
+    Returns {"stem_a::stem_b": score_at_zero_lag, ...} for every unordered
+    pair present in `stems`.
+    """
+    names = sorted(stems.keys())
+    scores = {}
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            a, b = names[i], names[j]
+            result = beat_alignment_score(stems[a], stems[b], sr)
+            scores[f"{a}::{b}"] = result["score_at_zero_lag"]
+    return scores

@@ -8,7 +8,12 @@ import librosa
 import numpy as np
 import pytest
 
-from epistemic_dj.mixing.render import beat_alignment_score, overlay, time_stretch_to_tempo
+from epistemic_dj.mixing.render import (
+    beat_alignment_score,
+    overlay,
+    stem_leakage_scores,
+    time_stretch_to_tempo,
+)
 
 SAMPLE_RATE = 22050
 
@@ -145,6 +150,29 @@ def test_alignment_drift_overlap_zero_gives_non_overlapping_windows():
     result = alignment_drift(y_a, y_b, SAMPLE_RATE, target_bpm=120.0, windows=5, overlap=0.0)
 
     assert len(result["per_window"]) == 5
+
+
+def test_stem_leakage_scores_high_for_identical_stems():
+    # A "vocals" stem that leaked a full copy of "drums" is the worst-case
+    # bleed -- identical content must score at (or very near) the max.
+    click = _make_click_track(bpm=120.0, duration_sec=15.0)
+    scores = stem_leakage_scores({"vocals": click, "drums": click}, SAMPLE_RATE)
+    assert scores["drums::vocals"] > 0.9
+
+
+def test_stem_leakage_scores_low_for_independent_stems():
+    rng = np.random.RandomState(0)
+    a = (rng.randn(SAMPLE_RATE * 15) * 0.1).astype(np.float32)
+    b = (rng.randn(SAMPLE_RATE * 15) * 0.1).astype(np.float32)
+    scores = stem_leakage_scores({"vocals": a, "other": b}, SAMPLE_RATE)
+    assert scores["other::vocals"] < 0.5
+
+
+def test_stem_leakage_scores_covers_all_pairs():
+    names = ("vocals", "drums", "bass")
+    stems = {name: np.zeros(SAMPLE_RATE * 2, dtype=np.float32) for name in names}
+    scores = stem_leakage_scores(stems, SAMPLE_RATE)
+    assert set(scores.keys()) == {"drums::vocals", "bass::drums", "bass::vocals"}
 
 
 def test_drift_correction_refused_when_fit_is_scatter():

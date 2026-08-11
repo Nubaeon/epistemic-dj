@@ -225,6 +225,21 @@ loop rather than shipping unverified:
     spread is unstable — on the real case, the extra checkpoints landed
     exactly on the majority value. More real measurements beat a
     clever heuristic.
+- **Phase 4.5 (done)** — independent multi-stem overlay
+  (`render_multistem_mashup`): generalizes `render_stem_mashup`'s
+  hardcoded vocals-over-instrumental split into ARBITRARY stem
+  combinations from both tracks (e.g. drums+bass from A, vocals+other
+  from B), reusing Phase 3/4's beatmatch/alignment machinery unchanged.
+  David (2026-08-11): "direct access by you to the software with
+  mathematical precision is what turns this into something anyone can
+  do" — this is the first concrete step past the binary vocals/
+  instrumental case toward that. Paired with a real stem-separation
+  quality signal (`mixing.render.stem_leakage_scores`): pairwise
+  zero-lag onset-envelope correlation across a track's own separated
+  stems (reusing `beat_alignment_score`'s existing primitive) —
+  informational only for now, not gating, but a genuine measured number
+  instead of blind trust in Demucs output. Verified end-to-end on real
+  audio, not just the mocked orchestration tests.
 - **Phase 5** — YouTube upload pipeline. **Phase 6** — Bandcamp
   (lowest priority, no confirmed public upload API).
 

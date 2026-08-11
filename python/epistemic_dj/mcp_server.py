@@ -20,8 +20,10 @@ from mcp.server.fastmcp import FastMCP
 
 from epistemic_dj.audio import (
     audio_features_to_vectors,
+    camelot_distance,
     download_stream,
     estimate_bytes_for_seconds,
+    estimate_key,
     load_audio_window,
     sample_track,
     sample_track_checkpoints,
@@ -397,6 +399,7 @@ TEMPO_TOLERANCE_BPM = 5.0
 CHEAP_TEMPO_EXCERPT_DURATION = 12.0
 TEMPO_INSTABILITY_SPREAD_BPM = 15.0
 TEMPO_DENSE_RECHECK_CHECKPOINTS = 5
+RENDER_WINDOW_OFFSET_SEC = 45.0  # matches the existing min-offset convention (avoid slow intros)
 
 
 async def _measure_tempo_checkpoints_at(
@@ -648,6 +651,109 @@ async def calibration_resolve_tempo_compatibility(
     )
 
 
+CHEAP_KEY_EXCERPT_DURATION = 12.0  # matches tempo's cheap-excerpt convention
+KEY_COMPATIBILITY_TOLERANCE = 1.0  # camelot_distance is a small integer scale
+
+
+async def _measure_key(source: str, track_ref: str, *, offset_sec: float, duration: float) -> dict:
+    """Real key measurement from actual audio -- genuinely separate from
+    analyze_file/sample_track (decision 9e863466's boundary), reuses the
+    same download primitive as the rendering path. No metadata/title-based
+    prediction step exists for key the way it did for tempo (there's no
+    common heuristic-guess anti-pattern to correct here), so this is a
+    direct measurement tool, not a predict/resolve pair -- see
+    calibration_predict_key_compatibility below for the calibrated,
+    numeric (and therefore CalibrationStore-compatible) quantity.
+    """
+    y, sr = await _download_audio_window(
+        source, track_ref, offset_sec=offset_sec, duration=duration
+    )
+    return estimate_key(y, sr)
+
+
+@mcp.tool()
+async def audio_analyze_key(
+    source: str,
+    track_ref: str,
+    offset_sec: float = RENDER_WINDOW_OFFSET_SEC,
+    duration: float = 30.0,
+) -> dict:
+    """Real audio-grounded key/mode detection (Krumhansl-Schmuckler
+    correlation over chroma_cqt, see audio/key.py) -- key, mode, Camelot
+    code, and the correlation coefficient (a genuine fit-quality measure,
+    not a confidence guess). Both sources supported, same offset
+    convention as the rest of the pipeline (skip a slow/quiet intro).
+    """
+    return await _measure_key(source, track_ref, offset_sec=offset_sec, duration=duration)
+
+
+@mcp.tool()
+async def calibration_predict_key_compatibility(
+    source: str,
+    track_ref_a: str,
+    track_ref_b: str,
+    track_name: str,
+    term: str,
+    practitioner_id: str = "default",
+    confidence_bucket: str | None = "key_compatibility_short_excerpt",
+    excerpt_duration: float = CHEAP_KEY_EXCERPT_DURATION,
+) -> TrackPrediction:
+    """Harmonic-mixing counterpart to calibration_predict_tempo_compatibility:
+    predicts pairwise key compatibility from real (cheap) audio on BOTH
+    tracks, never from metadata. predicted_value is camelot_distance
+    (mixing.render-style genuine measurement, see audio/key.py) -- 0 means
+    identical or relative major/minor, 1 means one real harmonic-mixing
+    move away, higher means less compatible. quantity='key_compatibility_dist'.
+    track_ref stored as 'track_ref_a::track_ref_b' (same composite-ref
+    convention as tempo compatibility) -- resolve via
+    calibration_resolve_key_compatibility, not calibration_resolve.
+    """
+    key_a = await _measure_key(
+        source, track_ref_a, offset_sec=RENDER_WINDOW_OFFSET_SEC, duration=excerpt_duration
+    )
+    key_b = await _measure_key(
+        source, track_ref_b, offset_sec=RENDER_WINDOW_OFFSET_SEC, duration=excerpt_duration
+    )
+    predicted_dist = float(camelot_distance(key_a["camelot"], key_b["camelot"]))
+
+    confidence = (
+        _calibration_store.get_hit_rate(confidence_bucket).mean if confidence_bucket else 0.5
+    )
+    return _calibration_store.log_prediction(
+        source=source, track_ref=f"{track_ref_a}::{track_ref_b}", track_name=track_name, term=term,
+        predicted_value=predicted_dist, confidence=confidence,
+        practitioner_id=practitioner_id, confidence_bucket=confidence_bucket,
+        quantity="key_compatibility_dist",
+    )
+
+
+@mcp.tool()
+async def calibration_resolve_key_compatibility(
+    prediction_id: str, max_duration: float = 45.0
+) -> TrackPrediction:
+    """Resolves a calibration_predict_key_compatibility prediction against
+    camelot_distance computed from FULLER (default 45s) audio on both
+    tracks -- same cheap-vs-fuller tiering as tempo compatibility.
+    """
+    prediction = _calibration_store.get_prediction(prediction_id)
+    if prediction.quantity != "key_compatibility_dist":
+        raise ValueError(
+            f"Prediction {prediction_id} has quantity={prediction.quantity!r}, "
+            "not 'key_compatibility_dist' -- use calibration_resolve instead."
+        )
+    track_ref_a, track_ref_b = prediction.track_ref.split("::")
+    key_a = await _measure_key(
+        prediction.source, track_ref_a, offset_sec=RENDER_WINDOW_OFFSET_SEC, duration=max_duration
+    )
+    key_b = await _measure_key(
+        prediction.source, track_ref_b, offset_sec=RENDER_WINDOW_OFFSET_SEC, duration=max_duration
+    )
+    measured_dist = float(camelot_distance(key_a["camelot"], key_b["camelot"]))
+    return _calibration_store.resolve_prediction(
+        prediction_id, measured_value=measured_dist, tolerance=KEY_COMPATIBILITY_TOLERANCE
+    )
+
+
 @mcp.tool()
 def calibration_brier(
     term_prefix: str | None = None,
@@ -758,7 +864,6 @@ def taste_save_mixtape(user_id: str, mode: str, tracks: list[CuratedTrack]) -> M
 
 
 RENDER_OUTPUT_DIR = Path(__file__).parent.parent / "renders"
-RENDER_WINDOW_OFFSET_SEC = 45.0  # matches the existing min-offset convention (avoid slow intros)
 
 
 async def _download_audio_stream_file(source: str, track_ref: str, *, total_seconds: float) -> Path:

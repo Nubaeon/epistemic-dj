@@ -65,10 +65,12 @@ guess standing in for listening to the track.
 - **Bandcamp + YouTube integration** - real collection/library ingestion,
   cookie/header auth (no official personal-collection API exists for either)
 - **Real audio analysis** - tempo, energy (`kinetic_energy`), mood
-  (`valence`) fit via a DEAM-trained regression, never metadata guessing
+  (`valence`) fit via a DEAM-trained regression, and key/mode
+  (Krumhansl-Schmuckler correlation over chroma) — never metadata guessing
 - **Calibration loop** - every prediction (energy, tempo, tempo
-  compatibility) is logged, resolved against real measurement, and
-  Brier-scored — self-correcting confidence, not a static number
+  compatibility, key compatibility) is logged, resolved against real
+  measurement, and Brier-scored — self-correcting confidence, not a
+  static number
 - **Taste profiling** - findings/patterns/anti-patterns as real Empirica-
   style artifacts, so "why did you play me this" has an actual answer
 
@@ -76,6 +78,10 @@ guess standing in for listening to the track.
 - **Beatmatching** - pitch-preserving time-stretch (librosa phase vocoder)
   to a real measured target tempo, octave-aware (half/double-time)
   compatibility scoring
+- **Harmonic mixing** - real key/mode detection (chroma +
+  Krumhansl-Schmuckler correlation), Camelot-wheel compatibility scoring
+  between two tracks, same predict/measure/resolve calibration loop as
+  tempo
 - **Real renders** - full-track overlay (`render_mashup`), fixed
   vocals-over-instrumental stem overlay (`render_stem_mashup`), and
   arbitrary independent stem combination from both tracks
@@ -175,6 +181,10 @@ Highlights:
 - `calibration_predict_tempo_compatibility` /
   `calibration_resolve_tempo_compatibility` — pairwise mixability,
   audio-grounded on both ends
+- `audio_analyze_key` — real key/mode/Camelot code from actual audio
+- `calibration_predict_key_compatibility` /
+  `calibration_resolve_key_compatibility` — pairwise harmonic mixability
+  (Camelot wheel distance), same calibration discipline as tempo
 - `render_mashup` — real time-stretched, beat-aligned overlay render,
   writes actual `.wav` output
 - `render_stem_mashup` — Demucs-separated vocals overlaid on another
@@ -249,6 +259,13 @@ Full phase-by-phase detail: [`docs/dev/architecture.md`](docs/dev/architecture.m
       instability, rather than a single-window octave-correction guess)
 - [x] Independent multi-stem overlay (`render_multistem_mashup`) +
       stem-separation leakage diagnostic
+- [x] Harmonic mixing: key/mode detection + Camelot-wheel compatibility
+      scoring, calibrated (predict → measure → resolve)
+- [ ] Phrase/downbeat-aware offset selection (replace fixed-offset render
+      start with a real detected structural point)
+- [ ] Calibrate stem-separation leakage itself (currently informational
+      only, not yet predict/measure/resolve)
+- [ ] EQ-aware overlay (frequency-space carving instead of flat gain-sum)
 - [ ] YouTube upload pipeline
 - [ ] Bandcamp export (lowest priority — no confirmed public upload API)
 

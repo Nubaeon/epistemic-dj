@@ -15,6 +15,7 @@ from epistemic_dj.audio.analysis import (
     sample_track,
     sample_track_checkpoints,
 )
+from epistemic_dj.audio.key import camelot_distance, estimate_key
 from epistemic_dj.audio.mapping import audio_features_to_vectors
 
 __all__ = [
@@ -22,8 +23,10 @@ __all__ = [
     "SampledAudioFeatures",
     "analyze_track",
     "audio_features_to_vectors",
+    "camelot_distance",
     "download_stream",
     "estimate_bytes_for_seconds",
+    "estimate_key",
     "load_audio_window",
     "sample_track",
     "sample_track_checkpoints",

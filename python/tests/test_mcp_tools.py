@@ -574,3 +574,85 @@ def test_calibration_predict_from_tags_raises_on_empty_tags():
             source="youtube", track_ref="vid", track_name="X", term="t",
             track_tags=[], taste_target_terms=["breakbeat"],
         )
+
+
+async def test_audio_analyze_key_returns_real_measurement(monkeypatch):
+    import numpy as np
+
+    async def fake_download_window(source, track_ref, *, offset_sec, duration):
+        return np.zeros(22050), 22050
+
+    monkeypatch.setattr(server, "_download_audio_window", fake_download_window)
+    monkeypatch.setattr(
+        server, "estimate_key",
+        lambda y, sr: {"key": "C", "mode": "major", "correlation": 0.8, "camelot": "8B"},
+    )
+
+    result = await server.audio_analyze_key(source="youtube", track_ref="vid1")
+    assert result == {"key": "C", "mode": "major", "correlation": 0.8, "camelot": "8B"}
+
+
+async def test_calibration_predict_key_compatibility_uses_camelot_distance(monkeypatch):
+    import numpy as np
+
+    keys_by_video = {
+        "vidA": {"key": "C", "mode": "major", "correlation": 0.8, "camelot": "8B"},
+        "vidB": {"key": "A", "mode": "minor", "correlation": 0.7, "camelot": "8A"},
+    }
+
+    async def fake_download_window(source, track_ref, *, offset_sec, duration):
+        return np.zeros(22050), 22050
+
+    monkeypatch.setattr(server, "_download_audio_window", fake_download_window)
+
+    # estimate_key only sees the raw audio array, not track_ref -- answer in
+    # call order (track_ref_a's _measure_key call happens before track_ref_b's).
+    call_order = iter(["vidA", "vidB"])
+
+    def fake_estimate_key(y, sr):
+        return keys_by_video[next(call_order)]
+
+    monkeypatch.setattr(server, "estimate_key", fake_estimate_key)
+
+    prediction = await server.calibration_predict_key_compatibility(
+        source="youtube", track_ref_a="vidA", track_ref_b="vidB",
+        track_name="A vs B", term="pair_x",
+    )
+
+    assert prediction.quantity == "key_compatibility_dist"
+    assert prediction.track_ref == "vidA::vidB"
+    # C major (8B) vs A minor (8A): relative major/minor -> distance 1.
+    assert prediction.predicted_value == pytest.approx(1.0)
+
+
+async def test_calibration_resolve_key_compatibility_rejects_wrong_quantity():
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="vidA", track_name="A", term="t",
+        predicted_value=0.6, confidence=0.5,
+    )
+    with pytest.raises(ValueError, match="key_compatibility_dist"):
+        await server.calibration_resolve_key_compatibility(prediction.id)
+
+
+async def test_calibration_resolve_key_compatibility_uses_fuller_analysis(monkeypatch):
+    import numpy as np
+
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="vidA::vidB", track_name="A vs B", term="pair_x",
+        predicted_value=1.0, confidence=0.5, quantity="key_compatibility_dist",
+    )
+
+    async def fake_download_window(source, track_ref, *, offset_sec, duration):
+        return np.zeros(22050), 22050
+
+    monkeypatch.setattr(server, "_download_audio_window", fake_download_window)
+    # Fuller analysis now says identical camelot codes -> distance 0.
+    monkeypatch.setattr(
+        server, "estimate_key",
+        lambda y, sr: {"key": "C", "mode": "major", "correlation": 0.9, "camelot": "8B"},
+    )
+
+    resolved = await server.calibration_resolve_key_compatibility(prediction.id, max_duration=45.0)
+
+    assert resolved.measured_value == pytest.approx(0.0)
+    assert resolved.verified is True  # |1.0 - 0.0| = 1.0 <= KEY_COMPATIBILITY_TOLERANCE

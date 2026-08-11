@@ -240,6 +240,35 @@ loop rather than shipping unverified:
   informational only for now, not gating, but a genuine measured number
   instead of blind trust in Demucs output. Verified end-to-end on real
   audio, not just the mocked orchestration tests.
+- **Phase 4.6 (done)** — harmonic mixing (empirica goal `9a40ff1f`):
+  `audio/key.py` implements real key/mode detection via `chroma_cqt` +
+  Krumhansl-Schmuckler correlation against the Krumhansl-Kessler
+  (1982/1990) profile templates (librosa has no built-in key detector —
+  confirmed via research this session; chroma is the standard primitive,
+  KS correlation the established technique real open-source key-finders
+  use). Returns key, mode, Camelot code, and the correlation coefficient
+  itself as a genuine fit-quality measure (same discipline as the
+  tempo-drift `r_squared` gate — report fit quality alongside any derived
+  value). Validated on synthetic sine-wave triads (C major, A minor, G
+  major all correctly detected) before trusting it on real audio.
+
+  Key detection is NOT routed through `CalibrationStore`'s
+  predict/resolve loop directly — the store's schema is a numeric `REAL`
+  column, and a key label is categorical, not a scalar regression
+  target. Unlike tempo, there's also no metadata/genre heuristic-guessing
+  anti-pattern to correct for key specifically. Instead,
+  `audio_analyze_key` is a direct measurement tool (mirrors
+  `audio_analyze_track`), and the calibrated, numeric quantity is
+  **pairwise Camelot-wheel distance** (`calibration_predict_key_compatibility`
+  / `calibration_resolve_key_compatibility`, quantity=`key_compatibility_dist`)
+  — the actually decision-relevant signal for "should these two tracks be
+  mixed," same cheap-excerpt-vs-fuller-excerpt tiering as tempo
+  compatibility. Verified on real audio: three real breaks/electronic
+  tracks (Take It Down Low, It Ain't My Fault, Move) detected as F minor
+  / A# minor / G minor respectively, correlations 0.34-0.60 (lower than
+  the near-perfect synthetic-triad case, expected for real mixed-
+  instrument audio) — reported honestly rather than asserted as
+  confident.
 - **Phase 5** — YouTube upload pipeline. **Phase 6** — Bandcamp
   (lowest priority, no confirmed public upload API).
 

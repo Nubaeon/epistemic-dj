@@ -656,3 +656,60 @@ async def test_calibration_resolve_key_compatibility_uses_fuller_analysis(monkey
 
     assert resolved.measured_value == pytest.approx(0.0)
     assert resolved.verified is True  # |1.0 - 0.0| = 1.0 <= KEY_COMPATIBILITY_TOLERANCE
+
+
+def _fake_stems():
+    import numpy as np
+    return {
+        "vocals": np.zeros(22050), "drums": np.zeros(22050),
+        "bass": np.zeros(22050), "other": np.zeros(22050),
+    }
+
+
+async def test_calibration_predict_stem_leakage_uses_worst_pairwise_score(monkeypatch):
+    async def fake_separate(source, track_ref, *, offset_sec, duration, device="cuda"):
+        return _fake_stems(), 22050
+
+    monkeypatch.setattr(server, "_separate_track_stems", fake_separate)
+    monkeypatch.setattr(
+        server, "stem_leakage_scores",
+        lambda stems, sr: {"bass::drums": 0.5, "other::vocals": 0.1},
+    )
+
+    prediction = await server.calibration_predict_stem_leakage(
+        source="youtube", track_ref="vid1", track_name="X", term="artist_x",
+    )
+
+    assert prediction.quantity == "stem_leakage_max"
+    assert prediction.predicted_value == pytest.approx(0.5)  # the WORST pair, not first/mean
+
+
+async def test_calibration_resolve_stem_leakage_rejects_wrong_quantity():
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="vidA", track_name="A", term="t",
+        predicted_value=0.6, confidence=0.5,
+    )
+    with pytest.raises(ValueError, match="stem_leakage_max"):
+        await server.calibration_resolve_stem_leakage(prediction.id)
+
+
+async def test_calibration_resolve_stem_leakage_uses_fuller_analysis(monkeypatch):
+    prediction = server.calibration_predict(
+        source="youtube", track_ref="vid1", track_name="X", term="t",
+        predicted_value=0.5, confidence=0.5, quantity="stem_leakage_max",
+    )
+
+    async def fake_separate(source, track_ref, *, offset_sec, duration, device="cuda"):
+        return _fake_stems(), 22050
+
+    monkeypatch.setattr(server, "_separate_track_stems", fake_separate)
+    # Fuller analysis says the worst pair is a bit cleaner now.
+    monkeypatch.setattr(
+        server, "stem_leakage_scores",
+        lambda stems, sr: {"bass::drums": 0.42, "other::vocals": 0.1},
+    )
+
+    resolved = await server.calibration_resolve_stem_leakage(prediction.id, max_duration=45.0)
+
+    assert resolved.measured_value == pytest.approx(0.42)
+    assert resolved.verified is True  # |0.5 - 0.42| = 0.08 <= STEM_LEAKAGE_TOLERANCE (0.15)

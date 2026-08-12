@@ -69,6 +69,8 @@ async def test_all_expected_tools_are_registered():
         "audio_analyze_key",
         "calibration_predict_key_compatibility",
         "calibration_resolve_key_compatibility",
+        "calibration_predict_stem_leakage",
+        "calibration_resolve_stem_leakage",
         "calibration_brier",
         "calibration_list_predictions",
         "bandcamp_get_track_tags",

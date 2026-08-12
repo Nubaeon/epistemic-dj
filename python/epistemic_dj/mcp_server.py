@@ -755,6 +755,89 @@ async def calibration_resolve_key_compatibility(
     )
 
 
+CHEAP_STEM_LEAKAGE_EXCERPT_DURATION = 12.0  # matches tempo/key's cheap-excerpt convention
+# Empirically set, not guessed: tested cheap (12s) vs fuller (45s) worst-pairwise-
+# leakage on 2 real tracks this session, deltas were 0.10 and 0.03 (finding 829deaa1)
+# -- 0.15 covers both observed deltas with margin, unlike a value picked blind.
+STEM_LEAKAGE_TOLERANCE = 0.15
+
+
+async def _measure_max_stem_leakage(
+    source: str, track_ref: str, *, offset_sec: float, duration: float, device: str = "cuda"
+) -> float:
+    """Worst (max) pairwise leakage across a track's own separated stems --
+    a single scalar summarizing separation quality, fit for the
+    CalibrationStore's numeric schema (see mixing.render.stem_leakage_scores
+    for the full pairwise breakdown, which stays informational).
+    """
+    stems, sr = await _separate_track_stems(
+        source, track_ref, offset_sec=offset_sec, duration=duration, device=device
+    )
+    scores = stem_leakage_scores(stems, sr)
+    return max(scores.values())
+
+
+@mcp.tool()
+async def calibration_predict_stem_leakage(
+    source: str,
+    track_ref: str,
+    track_name: str,
+    term: str,
+    practitioner_id: str = "default",
+    confidence_bucket: str | None = "stem_leakage_short_excerpt",
+    excerpt_duration: float = CHEAP_STEM_LEAKAGE_EXCERPT_DURATION,
+    device: str = "cuda",
+) -> TrackPrediction:
+    """Closes the calibration loop on stem-separation quality (Phase 4.7):
+    predicted_value is the WORST (max) pairwise leakage score from a cheap,
+    short-excerpt Demucs separation (see
+    mixing.render.stem_leakage_scores) -- real GPU cost either way, unlike
+    tempo/key there's no metadata shortcut to avoid, 'cheap' means shorter
+    audio, not free. Empirically verified this session (not assumed) that a
+    short excerpt correctly identifies WHICH stem pair leaks worst and
+    gives a magnitude within ~0.1 of a fuller reading (finding 829deaa1) --
+    unlike the octave-correction case earlier this session, where a
+    plausible-looking cheap signal was actively misleading, this one held
+    up under direct test. quantity='stem_leakage_max'.
+    """
+    worst = await _measure_max_stem_leakage(
+        source, track_ref, offset_sec=RENDER_WINDOW_OFFSET_SEC,
+        duration=excerpt_duration, device=device,
+    )
+    confidence = (
+        _calibration_store.get_hit_rate(confidence_bucket).mean if confidence_bucket else 0.5
+    )
+    return _calibration_store.log_prediction(
+        source=source, track_ref=track_ref, track_name=track_name, term=term,
+        predicted_value=worst, confidence=confidence,
+        practitioner_id=practitioner_id, confidence_bucket=confidence_bucket,
+        quantity="stem_leakage_max",
+    )
+
+
+@mcp.tool()
+async def calibration_resolve_stem_leakage(
+    prediction_id: str, max_duration: float = 45.0, device: str = "cuda"
+) -> TrackPrediction:
+    """Resolves a calibration_predict_stem_leakage prediction against the
+    worst pairwise leakage score from a FULLER (default 45s) separation --
+    same cheap-vs-fuller tiering as tempo/key compatibility.
+    """
+    prediction = _calibration_store.get_prediction(prediction_id)
+    if prediction.quantity != "stem_leakage_max":
+        raise ValueError(
+            f"Prediction {prediction_id} has quantity={prediction.quantity!r}, "
+            "not 'stem_leakage_max' -- use calibration_resolve instead."
+        )
+    measured = await _measure_max_stem_leakage(
+        prediction.source, prediction.track_ref, offset_sec=RENDER_WINDOW_OFFSET_SEC,
+        duration=max_duration, device=device,
+    )
+    return _calibration_store.resolve_prediction(
+        prediction_id, measured_value=measured, tolerance=STEM_LEAKAGE_TOLERANCE
+    )
+
+
 @mcp.tool()
 def calibration_brier(
     term_prefix: str | None = None,

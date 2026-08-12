@@ -283,6 +283,25 @@ loop rather than shipping unverified:
   silently dropped. Verified on real audio: offset moved from 45.0s to
   45.228s on the Take It Down Low / It Ain't My Fault pair (well within
   one beat period at ~103 BPM), render completed normally.
+- **Phase 4.10 (done)** — closed the calibration loop on stem-separation
+  quality (`calibration_predict_stem_leakage` /
+  `calibration_resolve_stem_leakage`, quantity=`stem_leakage_max`): the
+  WORST pairwise leakage score across a track's own separated stems
+  (`mixing.render.stem_leakage_scores`, shipped Phase 4.5, was
+  informational-only until now), same cheap-excerpt-vs-fuller-excerpt
+  predict/resolve/Brier pattern as tempo and key.
+
+  Before committing to that design, tested directly (not assumed)
+  whether the cheap-vs-fuller pattern even transfers to separation
+  quality -- unlike tempo (more sampling = more data points), a shorter
+  Demucs window could mean less model context, a fundamentally different
+  failure mode. On 2 real tracks, cheap (12s) vs fuller (45s) worst-
+  pairwise-leakage differed by only 0.03-0.10, and critically the WORST-
+  LEAKING STEM PAIR IDENTITY was identical across both durations for
+  both tracks. `STEM_LEAKAGE_TOLERANCE=0.15` is set from those measured
+  deltas with margin, not guessed. Verified end-to-end on real audio:
+  predicted 0.346 (cheap), resolved 0.398 (fuller), delta 0.052,
+  verified=True, Brier score computed correctly.
 - **Phase 5** — YouTube upload pipeline. **Phase 6** — Bandcamp
   (lowest priority, no confirmed public upload API).
 

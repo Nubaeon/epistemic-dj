@@ -96,10 +96,12 @@ guess standing in for listening to the track.
   beat instead of trusting an arbitrary fixed-second position (default
   on, `snap_offset_to_beat=False` to disable) — not full downbeat/phrase
   detection, that needs a heavier model
-- **Stem-separation quality diagnostic** - real measured leakage score
+- **Stem-separation quality, calibrated** - real measured leakage score
   (pairwise onset-envelope correlation across a track's own separated
-  stems) surfaced on every stem-based render, so separation quality is a
-  number you can see, not blind trust in the model
+  stems) surfaced on every stem-based render, AND closed through the
+  same predict → measure → resolve → Brier loop as tempo/key (cheap
+  short-excerpt separation predicts the worst-leaking stem pair, verified
+  this session to hold up on real audio unlike a metadata guess)
 - **Robust tempo measurement** - checkpoint spread beyond threshold
   triggers a denser re-measure rather than trusting a single-window
   octave guess (two signal-processing octave-correction heuristics were
@@ -190,6 +192,9 @@ Highlights:
 - `calibration_predict_key_compatibility` /
   `calibration_resolve_key_compatibility` — pairwise harmonic mixability
   (Camelot wheel distance), same calibration discipline as tempo
+- `calibration_predict_stem_leakage` / `calibration_resolve_stem_leakage`
+  — worst pairwise stem-separation leakage, predicted from a cheap
+  excerpt, resolved against a fuller one, Brier-scored
 - `render_mashup` — real time-stretched, beat-aligned overlay render,
   writes actual `.wav` output
 - `render_stem_mashup` — Demucs-separated vocals overlaid on another
@@ -269,8 +274,9 @@ Full phase-by-phase detail: [`docs/dev/architecture.md`](docs/dev/architecture.m
 - [x] Beat-snapped render offset (nearest real detected beat, not an
       arbitrary fixed second) — true downbeat/phrase detection remains a
       stretch goal (needs madmom or similar, not plain librosa)
-- [ ] Calibrate stem-separation leakage itself (currently informational
-      only, not yet predict/measure/resolve)
+- [x] Calibrate stem-separation leakage: worst pairwise leakage score,
+      predict → measure → resolve → Brier, cheap-excerpt tolerance
+      (0.15) set from real measured deltas, not guessed
 - [ ] EQ-aware overlay (frequency-space carving instead of flat gain-sum)
 - [ ] YouTube upload pipeline
 - [ ] Bandcamp export (lowest priority — no confirmed public upload API)

@@ -9,9 +9,12 @@ import numpy as np
 import pytest
 
 from epistemic_dj.mixing.render import (
+    apply_highpass,
     beat_alignment_score,
+    eq_aware_overlay,
     nearest_beat_offset,
     overlay,
+    spectral_band_overlap,
     stem_leakage_scores,
     time_stretch_to_tempo,
 )
@@ -174,6 +177,61 @@ def test_stem_leakage_scores_covers_all_pairs():
     stems = {name: np.zeros(SAMPLE_RATE * 2, dtype=np.float32) for name in names}
     scores = stem_leakage_scores(stems, SAMPLE_RATE)
     assert set(scores.keys()) == {"drums::vocals", "bass::drums", "bass::vocals"}
+
+
+def _make_tone(freq_hz: float, duration_sec: float = 6.0) -> np.ndarray:
+    t = np.arange(int(SAMPLE_RATE * duration_sec)) / SAMPLE_RATE
+    return (0.5 * np.sin(2 * np.pi * freq_hz * t)).astype(np.float32)
+
+
+def test_apply_highpass_removes_low_frequency_content():
+    bass = _make_tone(60.0)
+    filtered = apply_highpass(bass, SAMPLE_RATE, cutoff_hz=150.0)
+    assert np.sqrt(np.mean(filtered**2)) < 0.05 * np.sqrt(np.mean(bass**2))
+
+
+def test_apply_highpass_passes_high_frequency_content():
+    treble = _make_tone(2000.0)
+    filtered = apply_highpass(treble, SAMPLE_RATE, cutoff_hz=150.0)
+    assert np.sqrt(np.mean(filtered**2)) > 0.8 * np.sqrt(np.mean(treble**2))
+
+
+def test_spectral_band_overlap_high_for_two_bass_tones():
+    a = _make_tone(60.0)
+    b = _make_tone(80.0)  # different pitch, same band -- both real bass energy
+    overlap = spectral_band_overlap(a, b, SAMPLE_RATE, band_hz=(20.0, 250.0))
+    assert overlap > 0.1
+
+
+def test_spectral_band_overlap_low_when_one_signal_has_no_band_energy():
+    bass = _make_tone(60.0)
+    treble = _make_tone(2000.0)
+    overlap = spectral_band_overlap(bass, treble, SAMPLE_RATE, band_hz=(20.0, 250.0))
+    assert overlap < 0.02
+
+
+def test_eq_aware_overlay_matches_overlay_when_highpass_disabled():
+    a = _make_tone(60.0)
+    b = _make_tone(80.0)
+    assert eq_aware_overlay(a, b, SAMPLE_RATE) == pytest.approx(overlay(a, b))
+
+
+def test_eq_aware_overlay_highpass_measurably_reduces_spectral_clash():
+    # The actual validation this feature rests on: does the EQ move reduce
+    # the clash diagnostic on real (if synthetic) overlapping bass content,
+    # not just "sound different"?
+    a = _make_tone(60.0) + _make_tone(2000.0)
+    b = _make_tone(80.0) + _make_tone(3000.0)
+
+    before = spectral_band_overlap(a, b, SAMPLE_RATE, band_hz=(20.0, 250.0))
+    mixed = eq_aware_overlay(a, b, SAMPLE_RATE, highpass_b_hz=150.0)
+    # Re-derive what B contributed post-filter to check the clash directly
+    # (the mixed signal itself isn't directly comparable to `before`).
+    b_filtered = apply_highpass(b, SAMPLE_RATE, cutoff_hz=150.0)
+    after = spectral_band_overlap(a, b_filtered, SAMPLE_RATE, band_hz=(20.0, 250.0))
+
+    assert after < before * 0.1
+    assert len(mixed) > 0  # sanity: the render itself still produced audio
 
 
 def test_nearest_beat_offset_snaps_to_closest_real_beat():

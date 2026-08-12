@@ -302,6 +302,27 @@ loop rather than shipping unverified:
   deltas with margin, not guessed. Verified end-to-end on real audio:
   predicted 0.346 (cheap), resolved 0.398 (fuller), delta 0.052,
   verified=True, Brier score computed correctly.
+- **Phase 4.11 (done)** — EQ-aware overlay, the last flagged Phase-4
+  mixing-engine item. `overlay()` was a flat gain-sum; real DJs carve
+  frequency space (e.g. cut the incoming track's sub-bass so it doesn't
+  fight the reference's bassline -- "bass swap"). Two new primitives in
+  `mixing/render.py`: `spectral_band_overlap` (a real measured "clash"
+  diagnostic -- bandpass both signals to a band, default 20-250Hz
+  sub-bass/bass, short-time RMS, mean of the per-frame MINIMUM -- clash
+  is bounded by whichever signal is quieter at each instant) and
+  `apply_highpass`/`eq_aware_overlay` (zero-phase Butterworth high-pass
+  on track B before summing, opt-in via `highpass_b_hz=None` default so
+  no existing caller's behavior changes silently).
+
+  Verified on synthetic tones first (highpass reduced clash by >90% on
+  two overlapping bass tones), then on real audio (Take It Down Low x
+  It Ain't My Fault): 56-60% reduction in bass-band clash at
+  `highpass_b_hz=150`. `render_mashup` reports `bass_clash_before`/
+  `bass_clash_after` when the option is used, and both an EQ'd and
+  plain render were sent to David for a direct listen -- whether it's
+  actually audible/an improvement, per this session's standing
+  discipline, is for a human ear to judge, not asserted from the number
+  alone.
 - **Phase 5** — YouTube upload pipeline. **Phase 6** — Bandcamp
   (lowest priority, no confirmed public upload API).
 

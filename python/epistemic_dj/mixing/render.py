@@ -16,7 +16,7 @@ from pathlib import Path
 import librosa
 import numpy as np
 import soundfile as sf
-from scipy.signal import correlate
+from scipy.signal import butter, correlate, sosfiltfilt
 
 ONSET_HOP_LENGTH = 512  # librosa.onset.onset_strength's own default
 
@@ -319,3 +319,85 @@ def nearest_beat_offset(
     beat_times_abs = window_start_sec + librosa.frames_to_time(beat_frames, sr=sr)
     nearest_idx = int(np.argmin(np.abs(beat_times_abs - target_offset_sec)))
     return float(beat_times_abs[nearest_idx])
+
+
+# Sub-bass/bass region, standard DJ mixer low-EQ crossover convention (not
+# empirically tuned against real overlays yet -- domain knowledge applied,
+# same status tempo compatibility's octave-ratio assumption started at).
+DEFAULT_CLASH_BAND_HZ = (20.0, 250.0)
+
+
+def _bandpass(
+    y: np.ndarray, sr: int, band_hz: tuple[float, float], *, order: int = 4
+) -> np.ndarray:
+    low, high = band_hz
+    nyquist = sr / 2.0
+    low = max(low, 1.0)
+    high = min(high, nyquist - 1.0)
+    sos = butter(order, [low, high], btype="bandpass", fs=sr, output="sos")
+    return sosfiltfilt(sos, y).astype(np.float32)
+
+
+def spectral_band_overlap(
+    y_a: np.ndarray,
+    y_b: np.ndarray,
+    sr: int,
+    *,
+    band_hz: tuple[float, float] = DEFAULT_CLASH_BAND_HZ,
+) -> float:
+    """Real measured 'spectral clash' signal: how much energy could plausibly
+    fight in a given frequency band (default: sub-bass/bass) if these two
+    signals were overlaid as-is. Bandpass-filters both to `band_hz`, computes
+    short-time RMS envelopes, and takes the mean of the per-frame MINIMUM --
+    clash is bounded by whichever signal is quieter at each instant (you
+    can't have more mud than the quieter contributor supplies), so this is a
+    genuine overlap measure, not just "how loud is the band on average."
+    Higher means more clash. Not itself a claim about audibility -- a real
+    number to check an EQ choice against, same role stem_leakage_scores
+    plays for separation quality.
+    """
+    n = min(len(y_a), len(y_b))
+    if n == 0:
+        return 0.0
+    band_a = _bandpass(y_a[:n], sr, band_hz)
+    band_b = _bandpass(y_b[:n], sr, band_hz)
+    rms_a = librosa.feature.rms(y=band_a)[0]
+    rms_b = librosa.feature.rms(y=band_b)[0]
+    m = min(len(rms_a), len(rms_b))
+    if m == 0:
+        return 0.0
+    return float(np.mean(np.minimum(rms_a[:m], rms_b[:m])))
+
+
+def apply_highpass(y: np.ndarray, sr: int, cutoff_hz: float, *, order: int = 4) -> np.ndarray:
+    """Zero-phase Butterworth high-pass -- removes content below cutoff_hz
+    without the time-domain smearing a non-zero-phase filter would add
+    (matters here since the filtered signal still needs to line up with
+    the other track's beat grid).
+    """
+    nyquist = sr / 2.0
+    cutoff_hz = min(max(cutoff_hz, 1.0), nyquist - 1.0)
+    sos = butter(order, cutoff_hz, btype="highpass", fs=sr, output="sos")
+    return sosfiltfilt(sos, y).astype(np.float32)
+
+
+def eq_aware_overlay(
+    y_a: np.ndarray,
+    y_b: np.ndarray,
+    sr: int,
+    *,
+    gain_a: float = 0.6,
+    gain_b: float = 0.6,
+    highpass_b_hz: float | None = None,
+) -> np.ndarray:
+    """Same as overlay(), with an optional real frequency-domain move first:
+    high-pass track B (the overlaid/incoming track, matching render_mashup's
+    and render_stem_mashup's convention of A as the fixed reference) below
+    `highpass_b_hz` before summing -- standard DJ "bass swap" EQ practice,
+    cutting the incoming track's sub-bass so the reference keeps a clean low
+    end. highpass_b_hz=None (default) behaves IDENTICALLY to overlay() --
+    opt-in only, never a silent behavior change for existing callers.
+    """
+    if highpass_b_hz is not None:
+        y_b = apply_highpass(y_b, sr, highpass_b_hz)
+    return overlay(y_a, y_b, gain_a=gain_a, gain_b=gain_b)

@@ -102,6 +102,12 @@ guess standing in for listening to the track.
   same predict → measure → resolve → Brier loop as tempo/key (cheap
   short-excerpt separation predicts the worst-leaking stem pair, verified
   this session to hold up on real audio unlike a metadata guess)
+- **EQ-aware overlay** (`render_mashup`'s `highpass_b_hz`, opt-in) -
+  high-passes the overlaid track's sub-bass before summing (standard DJ
+  "bass swap"), instead of a flat gain-sum — measured 56-60% reduction
+  in bass-band spectral clash on real audio (`mixing.render.
+  spectral_band_overlap`), reported before/after so the effect is
+  checkable, not just asserted
 - **Robust tempo measurement** - checkpoint spread beyond threshold
   triggers a denser re-measure rather than trusting a single-window
   octave guess (two signal-processing octave-correction heuristics were
@@ -196,7 +202,7 @@ Highlights:
   — worst pairwise stem-separation leakage, predicted from a cheap
   excerpt, resolved against a fuller one, Brier-scored
 - `render_mashup` — real time-stretched, beat-aligned overlay render,
-  writes actual `.wav` output
+  writes actual `.wav` output; `highpass_b_hz` opts into EQ-aware overlay
 - `render_stem_mashup` — Demucs-separated vocals overlaid on another
   track's instrumental, same beatmatch/alignment machinery as
   `render_mashup` (requires `uv sync --extra separation`)
@@ -277,7 +283,9 @@ Full phase-by-phase detail: [`docs/dev/architecture.md`](docs/dev/architecture.m
 - [x] Calibrate stem-separation leakage: worst pairwise leakage score,
       predict → measure → resolve → Brier, cheap-excerpt tolerance
       (0.15) set from real measured deltas, not guessed
-- [ ] EQ-aware overlay (frequency-space carving instead of flat gain-sum)
+- [x] EQ-aware overlay: high-pass the overlaid track's sub-bass before
+      summing (`render_mashup`'s `highpass_b_hz`, opt-in), measured
+      56-60% bass-band clash reduction on real audio
 - [ ] YouTube upload pipeline
 - [ ] Bandcamp export (lowest priority — no confirmed public upload API)
 

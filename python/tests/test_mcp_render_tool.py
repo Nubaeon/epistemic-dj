@@ -184,6 +184,59 @@ async def test_render_mashup_clamps_corrected_offset_to_nonnegative(monkeypatch,
     assert b_offsets[1] == pytest.approx(0.0)  # clamped, not negative
 
 
+async def test_render_mashup_highpass_b_hz_reports_bass_clash_reduction(monkeypatch, tmp_path):
+    async def fake_measure_checkpoints(source, track_ref, max_duration):
+        return {"vidA": [120.0], "vidB": [120.0]}[track_ref]
+
+    monkeypatch.setattr(server, "_measure_tempo_checkpoints", fake_measure_checkpoints)
+
+    sr = 22050
+    t = np.arange(sr * 5) / sr
+    y_a = (0.5 * np.sin(2 * np.pi * 60.0 * t)).astype(np.float32)
+    y_b = (0.5 * np.sin(2 * np.pi * 80.0 * t)).astype(np.float32)
+
+    async def fake_download_window(source, track_ref, *, offset_sec, duration):
+        return (y_a if track_ref == "vidA" else y_b, sr)
+
+    monkeypatch.setattr(server, "_download_audio_window", fake_download_window)
+    monkeypatch.setattr(server, "RENDER_OUTPUT_DIR", tmp_path)
+
+    result = await server.render_mashup(
+        source="youtube", track_ref_a="vidA", track_ref_b="vidB",
+        output_name="eq_test", render_duration=5.0, auto_align=False,
+        snap_offset_to_beat=False, highpass_b_hz=150.0,
+    )
+
+    assert "bass_clash_before" in result["naive"]
+    assert "bass_clash_after" in result["naive"]
+    assert result["naive"]["bass_clash_after"] < result["naive"]["bass_clash_before"] * 0.5
+
+
+async def test_render_mashup_highpass_b_hz_none_skips_bass_clash_reporting(monkeypatch, tmp_path):
+    async def fake_measure_checkpoints(source, track_ref, max_duration):
+        return {"vidA": [120.0], "vidB": [120.0]}[track_ref]
+
+    monkeypatch.setattr(server, "_measure_tempo_checkpoints", fake_measure_checkpoints)
+
+    sr = 22050
+    y = (np.random.RandomState(0).randn(sr * 5) * 0.1).astype(np.float32)
+
+    async def fake_download_window(source, track_ref, *, offset_sec, duration):
+        return (y, sr)
+
+    monkeypatch.setattr(server, "_download_audio_window", fake_download_window)
+    monkeypatch.setattr(server, "RENDER_OUTPUT_DIR", tmp_path)
+
+    result = await server.render_mashup(
+        source="youtube", track_ref_a="vidA", track_ref_b="vidB",
+        output_name="eq_test2", render_duration=5.0, auto_align=False,
+        snap_offset_to_beat=False,
+    )
+
+    assert "bass_clash_before" not in result["naive"]
+    assert "bass_clash_after" not in result["naive"]
+
+
 def test_instrumental_from_stems_sums_non_vocal_layers():
     stems = {
         "vocals": np.array([10.0, 10.0]),

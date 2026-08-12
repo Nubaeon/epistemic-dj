@@ -10,6 +10,7 @@ import pytest
 
 from epistemic_dj.mixing.render import (
     beat_alignment_score,
+    nearest_beat_offset,
     overlay,
     stem_leakage_scores,
     time_stretch_to_tempo,
@@ -173,6 +174,30 @@ def test_stem_leakage_scores_covers_all_pairs():
     stems = {name: np.zeros(SAMPLE_RATE * 2, dtype=np.float32) for name in names}
     scores = stem_leakage_scores(stems, SAMPLE_RATE)
     assert set(scores.keys()) == {"drums::vocals", "bass::drums", "bass::vocals"}
+
+
+def test_nearest_beat_offset_snaps_to_closest_real_beat():
+    # 120 BPM -> beats every 0.5s: ..., 5.0, 5.5, 6.0, ... . Target 5.3 is
+    # closer to 5.5 (0.2 away) than 5.0 (0.3 away).
+    y = _make_click_track(bpm=120.0, duration_sec=20.0)
+    snapped = nearest_beat_offset(y, SAMPLE_RATE, window_start_sec=0.0, target_offset_sec=5.3)
+    assert snapped == pytest.approx(5.5, abs=0.05)
+
+
+def test_nearest_beat_offset_accounts_for_window_start():
+    # Same click track, but the window itself starts at 3.0s into the
+    # original track -- beat times must be reported in ABSOLUTE (original
+    # track) time, not window-relative time.
+    y = _make_click_track(bpm=120.0, duration_sec=20.0)
+    snapped = nearest_beat_offset(y, SAMPLE_RATE, window_start_sec=3.0, target_offset_sec=8.3)
+    assert snapped == pytest.approx(8.5, abs=0.05)
+    assert snapped > 3.0  # sanity: still a real absolute time, not window-relative
+
+
+def test_nearest_beat_offset_falls_back_when_no_beats_detected():
+    silence = np.zeros(SAMPLE_RATE * 5, dtype=np.float32)
+    snapped = nearest_beat_offset(silence, SAMPLE_RATE, window_start_sec=0.0, target_offset_sec=2.0)
+    assert snapped == pytest.approx(2.0)
 
 
 def test_drift_correction_refused_when_fit_is_scatter():

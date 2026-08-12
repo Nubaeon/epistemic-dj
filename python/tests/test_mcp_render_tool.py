@@ -39,6 +39,13 @@ async def test_render_mashup_auto_align_writes_naive_and_aligned_files(monkeypat
             "score_at_zero_lag": 0.1, "best_score": 0.6, "best_lag_sec": 2.0,
         },
     )
+    # Beat-snapping is covered separately (test_mixing_render.py) -- disable
+    # it here so the offset assertions below aren't perturbed by beat
+    # detection on synthetic random noise.
+    async def fake_snap_offset(source, track_ref, offset):
+        return offset
+
+    monkeypatch.setattr(server, "_snap_offset_to_beat", fake_snap_offset)
 
     result = await server.render_mashup(
         source="youtube", track_ref_a="vidA", track_ref_b="vidB",
@@ -60,6 +67,62 @@ async def test_render_mashup_auto_align_writes_naive_and_aligned_files(monkeypat
     assert b_offsets[1] != pytest.approx(10.0)
     # track A downloaded once -- it's never re-fetched (it's the fixed target)
     assert len([o for ref, o in requested_offsets if ref == "vidA"]) == 1
+
+
+async def test_render_mashup_snaps_offset_to_beat_by_default(monkeypatch, tmp_path):
+    async def fake_measure_checkpoints(source, track_ref, max_duration):
+        return {"vidA": [120.0], "vidB": [130.0]}[track_ref]
+
+    monkeypatch.setattr(server, "_measure_tempo_checkpoints", fake_measure_checkpoints)
+
+    sr = 22050
+    y = (np.random.RandomState(0).randn(sr * 5) * 0.1).astype(np.float32)
+
+    async def fake_download_window(source, track_ref, *, offset_sec, duration):
+        return (y, sr)
+
+    async def fake_snap_offset(source, track_ref, offset):
+        assert track_ref == "vidA"  # snaps against the FIXED reference track
+        return 11.5  # deliberately different from the requested 10.0
+
+    monkeypatch.setattr(server, "_download_audio_window", fake_download_window)
+    monkeypatch.setattr(server, "_snap_offset_to_beat", fake_snap_offset)
+    monkeypatch.setattr(server, "RENDER_OUTPUT_DIR", tmp_path)
+
+    result = await server.render_mashup(
+        source="youtube", track_ref_a="vidA", track_ref_b="vidB",
+        output_name="snap_test", render_duration=5.0, offset_sec=10.0, auto_align=False,
+    )
+
+    assert result["offset_sec"] == pytest.approx(11.5)
+
+
+async def test_render_mashup_snap_offset_to_beat_false_uses_raw_offset(monkeypatch, tmp_path):
+    async def fake_measure_checkpoints(source, track_ref, max_duration):
+        return {"vidA": [120.0], "vidB": [130.0]}[track_ref]
+
+    monkeypatch.setattr(server, "_measure_tempo_checkpoints", fake_measure_checkpoints)
+
+    sr = 22050
+    y = (np.random.RandomState(0).randn(sr * 5) * 0.1).astype(np.float32)
+
+    async def fake_download_window(source, track_ref, *, offset_sec, duration):
+        return (y, sr)
+
+    async def fail_if_called(source, track_ref, offset):
+        raise AssertionError("_snap_offset_to_beat should not be called when disabled")
+
+    monkeypatch.setattr(server, "_download_audio_window", fake_download_window)
+    monkeypatch.setattr(server, "_snap_offset_to_beat", fail_if_called)
+    monkeypatch.setattr(server, "RENDER_OUTPUT_DIR", tmp_path)
+
+    result = await server.render_mashup(
+        source="youtube", track_ref_a="vidA", track_ref_b="vidB",
+        output_name="snap_test2", render_duration=5.0, offset_sec=10.0,
+        auto_align=False, snap_offset_to_beat=False,
+    )
+
+    assert result["offset_sec"] == pytest.approx(10.0)
 
 
 async def test_render_mashup_auto_align_false_skips_second_pass(monkeypatch, tmp_path):

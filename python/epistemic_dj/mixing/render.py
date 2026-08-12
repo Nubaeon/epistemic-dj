@@ -297,3 +297,25 @@ def stem_leakage_scores(stems: dict[str, np.ndarray], sr: int) -> dict[str, floa
             result = beat_alignment_score(stems[a], stems[b], sr)
             scores[f"{a}::{b}"] = result["score_at_zero_lag"]
     return scores
+
+
+def nearest_beat_offset(
+    y: np.ndarray, sr: int, *, window_start_sec: float, target_offset_sec: float
+) -> float:
+    """Snaps a render's start point to the nearest REAL detected beat,
+    instead of an arbitrary fixed-second offset. Not true downbeat/bar/
+    phrase detection -- that needs a heavier model (madmom or similar,
+    confirmed via research this session; plain librosa has no downbeat
+    tracker) -- this is the honestly-scoped-down first step: at least
+    start on a genuine beat, not a random sample position.
+
+    `y`/`sr` cover [window_start_sec, window_start_sec + len(y)/sr) of the
+    ORIGINAL track. Returns target_offset_sec unchanged if no beat is
+    detected in the window (e.g. silence).
+    """
+    _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+    if len(beat_frames) == 0:
+        return target_offset_sec
+    beat_times_abs = window_start_sec + librosa.frames_to_time(beat_frames, sr=sr)
+    nearest_idx = int(np.argmin(np.abs(beat_times_abs - target_offset_sec)))
+    return float(beat_times_abs[nearest_idx])

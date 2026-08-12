@@ -46,6 +46,7 @@ from epistemic_dj.mixing import (
     alignment_drift,
     beat_alignment_score,
     drift_corrected_stretch_bpm,
+    nearest_beat_offset,
     overlay,
     stem_leakage_scores,
     time_stretch_to_tempo,
@@ -910,6 +911,25 @@ async def _download_audio_window(
         path.unlink(missing_ok=True)
 
 
+BEAT_SNAP_MARGIN_SEC = 3.0
+
+
+async def _snap_offset_to_beat(source: str, track_ref: str, target_offset_sec: float) -> float:
+    """Snaps a render offset to the nearest REAL detected beat (see
+    mixing.render.nearest_beat_offset) rather than trusting an arbitrary
+    fixed-second offset. Downloads a small window straddling the target
+    (+-BEAT_SNAP_MARGIN_SEC) purely for beat detection -- a real, cheap
+    extra download, not free, but small relative to the render itself.
+    """
+    window_start = max(0.0, target_offset_sec - BEAT_SNAP_MARGIN_SEC)
+    y, sr = await _download_audio_window(
+        source, track_ref, offset_sec=window_start, duration=2 * BEAT_SNAP_MARGIN_SEC
+    )
+    return nearest_beat_offset(
+        y, sr, window_start_sec=window_start, target_offset_sec=target_offset_sec
+    )
+
+
 async def _separate_track_stems(
     source: str, track_ref: str, *, offset_sec: float, duration: float, device: str = "cuda"
 ) -> tuple[dict, int]:
@@ -941,6 +961,7 @@ async def render_mashup(
     offset_sec: float = RENDER_WINDOW_OFFSET_SEC,
     auto_align: bool = True,
     refine_tempo: bool = False,
+    snap_offset_to_beat: bool = True,
 ) -> dict:
     """Phase 3 of the mixing-engine roadmap: real renders. Downloads a
     contiguous window (default 30s, starting at offset_sec to skip a
@@ -955,6 +976,15 @@ async def render_mashup(
     to match. Both must share `source` (bandcamp or youtube) -- cross-source
     mashups aren't wired yet. Output written to epistemic-dj/renders/.
 
+    snap_offset_to_beat (default True): offset_sec is nudged to the
+    nearest REAL detected beat in track A (mixing.render.nearest_beat_offset)
+    before rendering -- an arbitrary fixed-second offset has no reason to
+    land ON a beat. Not full downbeat/bar/phrase detection (that needs a
+    heavier model, e.g. madmom -- plain librosa has no downbeat tracker,
+    confirmed via research this session); this is the honestly-scoped-down
+    first step. The actually-used offset is reported in the result so
+    callers can see what changed.
+
     auto_align (default True): the first real render (empirica finding
     85e654a5) showed naive same-offset overlay can land two DIFFERENT
     tracks badly out of phase -- there's no reason two arbitrary tracks'
@@ -968,6 +998,9 @@ async def render_mashup(
     itself will lead to correct hits') -- this reports both scores
     honestly, it does not claim the aligned version is definitively better.
     """
+    if snap_offset_to_beat:
+        offset_sec = await _snap_offset_to_beat(source, track_ref_a, offset_sec)
+
     tempo_checkpoints_a = await _measure_tempo_checkpoints(source, track_ref_a, 45.0)
     tempo_checkpoints_b = await _measure_tempo_checkpoints(source, track_ref_b, 45.0)
     bpm_a = _tempo_point_estimate(tempo_checkpoints_a, track_ref=track_ref_a)
@@ -1006,7 +1039,10 @@ async def render_mashup(
         }
 
     naive = await _render_at(offset_sec, "naive")
-    result = {"bpm_a": bpm_a, "bpm_b": bpm_b, "target_bpm": bpm_a, "naive": naive}
+    result = {
+        "bpm_a": bpm_a, "bpm_b": bpm_b, "target_bpm": bpm_a,
+        "offset_sec": offset_sec, "naive": naive,
+    }
 
     if auto_align:
         # best_lag_sec is measured in STRETCHED-audio time; convert back to

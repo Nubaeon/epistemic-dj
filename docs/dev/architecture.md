@@ -269,6 +269,20 @@ loop rather than shipping unverified:
   the near-perfect synthetic-triad case, expected for real mixed-
   instrument audio) — reported honestly rather than asserted as
   confident.
+- **Phase 4.9 (done)** — beat-snapped render offset
+  (`mixing.render.nearest_beat_offset`, `render_mashup`'s
+  `snap_offset_to_beat`, default on): originally scoped as "phrase/
+  downbeat-aware offset selection", but real downbeat/bar detection
+  needs a heavier model (madmom or similar RNN-based tracker — plain
+  librosa has no downbeat tracker, confirmed via research this session).
+  Scoped down honestly rather than adding a new heavy ML dependency for
+  a first pass: snaps the render's start point to the nearest beat
+  `librosa.beat.beat_track` (already used throughout this codebase)
+  actually detects, instead of trusting an arbitrary fixed-second offset.
+  True phrase/bar-awareness stays a documented stretch goal, not
+  silently dropped. Verified on real audio: offset moved from 45.0s to
+  45.228s on the Take It Down Low / It Ain't My Fault pair (well within
+  one beat period at ~103 BPM), render completed normally.
 - **Phase 5** — YouTube upload pipeline. **Phase 6** — Bandcamp
   (lowest priority, no confirmed public upload API).
 

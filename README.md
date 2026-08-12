@@ -91,6 +91,10 @@ guess standing in for listening to the track.
 - **Alignment scoring** - genuine cross-correlation of onset-strength
   envelopes measures how well two tracks' beats actually line up, not a
   guess — and the render auto-corrects using its own signal
+- **Beat-snapped render start** - the render offset snaps to the nearest
+  real detected beat instead of trusting an arbitrary fixed-second
+  position (default on, `snap_offset_to_beat=False` to disable) — not
+  full downbeat/phrase detection, that needs a heavier model
 - **Stem-separation quality diagnostic** - real measured leakage score
   (pairwise onset-envelope correlation across a track's own separated
   stems) surfaced on every stem-based render, so separation quality is a
@@ -261,8 +265,9 @@ Full phase-by-phase detail: [`docs/dev/architecture.md`](docs/dev/architecture.m
       stem-separation leakage diagnostic
 - [x] Harmonic mixing: key/mode detection + Camelot-wheel compatibility
       scoring, calibrated (predict → measure → resolve)
-- [ ] Phrase/downbeat-aware offset selection (replace fixed-offset render
-      start with a real detected structural point)
+- [x] Beat-snapped render offset (nearest real detected beat, not an
+      arbitrary fixed second) — true downbeat/phrase detection remains a
+      stretch goal (needs madmom or similar, not plain librosa)
 - [ ] Calibrate stem-separation leakage itself (currently informational
       only, not yet predict/measure/resolve)
 - [ ] EQ-aware overlay (frequency-space carving instead of flat gain-sum)

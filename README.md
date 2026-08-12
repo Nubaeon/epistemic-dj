@@ -91,10 +91,11 @@ guess standing in for listening to the track.
 - **Alignment scoring** - genuine cross-correlation of onset-strength
   envelopes measures how well two tracks' beats actually line up, not a
   guess — and the render auto-corrects using its own signal
-- **Beat-snapped render start** - the render offset snaps to the nearest
-  real detected beat instead of trusting an arbitrary fixed-second
-  position (default on, `snap_offset_to_beat=False` to disable) — not
-  full downbeat/phrase detection, that needs a heavier model
+- **Beat-snapped render start** (`render_mashup` only, not yet the
+  stem-based renders) - the offset snaps to the nearest real detected
+  beat instead of trusting an arbitrary fixed-second position (default
+  on, `snap_offset_to_beat=False` to disable) — not full downbeat/phrase
+  detection, that needs a heavier model
 - **Stem-separation quality diagnostic** - real measured leakage score
   (pairwise onset-envelope correlation across a track's own separated
   stems) surfaced on every stem-based render, so separation quality is a
